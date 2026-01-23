@@ -233,11 +233,12 @@
                 if (!backendUrl) return;
                 setSyncStatus('syncing');
                 try {
+                    // Update: PHP API uses ?table=param
                     const [resPasos, resMembers, resIguala, resEvents] = await Promise.all([
-                        fetch(`${backendUrl}/api/pasos`).then(r => r.json()),
-                        fetch(`${backendUrl}/api/members`).then(r => r.json()),
-                        fetch(`${backendUrl}/api/iguala`).then(r => r.json()),
-                        fetch(`${backendUrl}/api/events`).then(r => r.json())
+                        fetch(`${backendUrl}/api/index.php?table=pasos`).then(r => r.json()),
+                        fetch(`${backendUrl}/api/index.php?table=members`).then(r => r.json()),
+                        fetch(`${backendUrl}/api/index.php?table=iguala`).then(r => r.json()),
+                        fetch(`${backendUrl}/api/index.php?table=events`).then(r => r.json())
                     ]);
 
                     if (resPasos && resPasos.length > 0) {
@@ -312,12 +313,12 @@
 
                 if (isOnline) {
                     try {
-                        await fetch(`${backendUrl}/api/pasos`, {
+                        await fetch(`${backendUrl}/api/index.php?table=pasos`, {
                             method: 'POST',
                             headers: { 'Content-Type': 'application/json' },
                             body: JSON.stringify({ id: newId, name, type })
                         });
-                        await fetch(`${backendUrl}/api/iguala`, {
+                        await fetch(`${backendUrl}/api/index.php?table=iguala`, {
                             method: 'POST',
                             headers: { 'Content-Type': 'application/json' },
                             body: JSON.stringify({
@@ -337,7 +338,7 @@
                 setPasos(pasos.map(p => p.id === id ? { ...p, name: newName } : p));
 
                 if (isOnline) {
-                    await fetch(`${backendUrl}/api/pasos/${id}`, {
+                    await fetch(`${backendUrl}/api/index.php?table=pasos&id=${id}`, {
                         method: 'PUT',
                         headers: { 'Content-Type': 'application/json' },
                         body: JSON.stringify({ name: newName })
@@ -360,7 +361,7 @@
                 if (currentPasoId === id) setCurrentPasoId(pasos.find(p => p.id !== id).id);
 
                 if (isOnline) {
-                    await fetch(`${backendUrl}/api/pasos/${id}`, { method: 'DELETE' });
+                    await fetch(`${backendUrl}/api/index.php?table=pasos&id=${id}`, { method: 'DELETE' });
                     // Cascading delete handled by DB or backend logic if needed, 
                     // but for now relying on backend to clean up or DB foreign keys (on delete cascade)
                 }
@@ -373,7 +374,7 @@
                 setMembers([...members, fullMember]);
 
                 if (isOnline) {
-                    await fetch(`${backendUrl}/api/members`, {
+                    await fetch(`${backendUrl}/api/index.php?table=members`, {
                         method: 'POST',
                         headers: { 'Content-Type': 'application/json' },
                         body: JSON.stringify({
@@ -398,7 +399,7 @@
                 setMembers(members.map(m => m.id === id ? { ...m, ...updated } : m));
 
                 if (isOnline) {
-                    await fetch(`${backendUrl}/api/members/${id}`, {
+                    await fetch(`${backendUrl}/api/index.php?table=members&id=${id}`, {
                         method: 'PUT',
                         headers: { 'Content-Type': 'application/json' },
                         body: JSON.stringify({
@@ -431,9 +432,9 @@
                 setIgualaData(newIguala);
 
                 if (isOnline) {
-                    await fetch(`${backendUrl}/api/members/${id}`, { method: 'DELETE' });
+                    await fetch(`${backendUrl}/api/index.php?table=members&id=${id}`, { method: 'DELETE' });
                     // Also need to push updated Iguala to clear assignment remotely
-                    await fetch(`${backendUrl}/api/iguala`, {
+                    await fetch(`${backendUrl}/api/index.php?table=iguala`, {
                         method: 'POST',
                         headers: { 'Content-Type': 'application/json' },
                         body: JSON.stringify({
@@ -458,7 +459,7 @@
                 }));
 
                 if (isOnline) {
-                    await fetch(`${backendUrl}/api/iguala`, {
+                    await fetch(`${backendUrl}/api/index.php?table=iguala`, {
                         method: 'POST',
                         headers: { 'Content-Type': 'application/json' },
                         body: JSON.stringify({
@@ -498,7 +499,7 @@
                 setEvents([...events, newEvent]);
 
                 if (isOnline) {
-                    await fetch(`${backendUrl}/api/events`, {
+                    await fetch(`${backendUrl}/api/index.php?table=events`, {
                         method: 'POST',
                         headers: { 'Content-Type': 'application/json' },
                         body: JSON.stringify({
@@ -592,15 +593,15 @@
 
                     <Card>
                         <h3 className="text-xl font-bold mb-4 flex items-center gap-2">
-                            <Icon name="database" className="text-cofrade-purple" /> Conexión Backend (Node.js)
+                            <Icon name="database" className="text-cofrade-purple" /> Conexión Backend (PHP/MySQL)
                         </h3>
                         <form onSubmit={(e) => { e.preventDefault(); store.setBackendUrl(url); }} className="space-y-4">
                             <p className="text-sm text-gray-500 mb-4">
-                                Configura la URL del servidor backend (Railway o Localhost).
+                                Configura la URL donde está alojada tu API PHP. Ej: <code>http://localhost/api</code>
                             </p>
                             <div className="flex gap-2">
                                 <input required type="url" className="flex-1 px-3 py-2 border border-blue-200 rounded-lg bg-blue-50 focus:bg-white transition-colors"
-                                    placeholder="https://my-app.up.railway.app"
+                                    placeholder="http://localhost/mi-proyecto"
                                     value={url} onChange={e => setUrl(e.target.value)} />
                                 <Button type="submit">Guardar</Button>
                             </div>
