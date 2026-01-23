@@ -1,0 +1,1588 @@
+<!DOCTYPE html>
+<html lang="es">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Gestor de Cuadrillas - Online</title>
+
+    <!-- React & ReactDOM -->
+    <script crossorigin src="https://unpkg.com/react@18/umd/react.development.js"></script>
+    <script crossorigin src="https://unpkg.com/react-dom@18/umd/react-dom.development.js"></script>
+
+    <!-- Babel for JSX -->
+    <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+
+    <!-- Tailwind CSS -->
+    <script src="https://cdn.tailwindcss.com"></script>
+
+    <!-- Lucide Icons (Global) -->
+    <script src="https://unpkg.com/lucide@latest"></script>
+
+    <!-- Supabase JS -->
+    <script src="https://unpkg.com/@supabase/supabase-js@2"></script>
+
+    <!-- jsPDF & AutoTable -->
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf-autotable/3.5.31/jspdf.plugin.autotable.min.js"></script>
+
+    <script>
+        tailwind.config = {
+            theme: {
+                extend: {
+                    colors: {
+                        cofrade: {
+                            purple: '#4c1d95',
+                            gold: '#fbbf24',
+                            dark: '#1e293b',
+                            light: '#f8fafc',
+                            muted: '#64748b'
+                        }
+                    },
+                    fontFamily: {
+                        sans: ['Segoe UI', 'Roboto', 'Helvetica', 'Arial', 'sans-serif'],
+                    }
+                }
+            }
+        }
+    </script>
+
+    <style>
+        body {
+            background-color: #f3f4f6;
+        }
+
+        /* Custom scrollbar */
+        ::-webkit-scrollbar {
+            width: 8px;
+        }
+
+        ::-webkit-scrollbar-track {
+            background: #f1f1f1;
+        }
+
+        ::-webkit-scrollbar-thumb {
+            background: #c7c7c7;
+            border-radius: 4px;
+        }
+
+        ::-webkit-scrollbar-thumb:hover {
+            background: #a8a8a8;
+        }
+    </style>
+</head>
+
+<body>
+    <div id="root"></div>
+
+    <script type="text/babel">
+        const { useState, useEffect, useMemo, useRef } = React;
+        const { createClient } = supabase;
+
+        // --- Utils & Components ---
+
+        const Icon = ({ name, size = 20, className = "" }) => {
+            useEffect(() => {
+                lucide.createIcons();
+            }, [name]);
+            return <i data-lucide={name} width={size} height={size} className={className}></i>;
+        };
+
+        const Button = ({ children, onClick, variant = 'primary', className = '', ...props }) => {
+            const baseStyle = "px-4 py-2 rounded-lg font-medium transition-all duration-200 flex items-center gap-2 justify-center";
+            const variants = {
+                primary: "bg-cofrade-purple text-white hover:bg-purple-800 shadow-md",
+                outline: "border-2 border-cofrade-purple text-cofrade-purple hover:bg-purple-50",
+                ghost: "text-gray-600 hover:bg-gray-100",
+                gold: "bg-cofrade-gold text-white hover:bg-yellow-500 shadow-md text-slate-900",
+                danger: "bg-red-50 text-red-600 hover:bg-red-100 border border-red-200"
+            };
+            return (
+                <button onClick={onClick} className={`${baseStyle} ${variants[variant]} ${className}`} {...props}>
+                    {children}
+                </button>
+            );
+        };
+
+        const exportToPDF = (title, headers, data, filename) => {
+            const { jsPDF } = window.jspdf;
+            const doc = new jsPDF();
+
+            doc.setFontSize(18);
+            doc.text(title, 14, 20);
+
+            doc.setFontSize(10);
+            doc.text(`Fecha: ${new Date().toLocaleDateString()}`, 14, 28);
+
+            doc.autoTable({
+                head: [headers],
+                body: data,
+                startY: 35,
+                theme: 'grid',
+                styles: { fontSize: 8 },
+                headStyles: { fillColor: [76, 29, 149] } // cofrade-purple
+            });
+
+            doc.save(filename);
+        };
+
+        const Card = ({ children, className = "" }) => (
+            <div className={`bg-white rounded-xl shadow-sm border border-slate-100 p-6 ${className}`}>
+                {children}
+            </div>
+        );
+
+        const Modal = ({ isOpen, onClose, title, children }) => {
+            if (!isOpen) return null;
+            return (
+                <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4 backdrop-blur-sm">
+                    <div className="bg-white rounded-2xl w-full max-w-md shadow-2xl animate-in fade-in zoom-in duration-200 max-h-[90vh] overflow-y-auto">
+                        <div className="flex justify-between items-center p-6 border-b border-gray-100 sticky top-0 bg-white z-10">
+                            <h3 className="text-xl font-bold text-cofrade-dark">{title}</h3>
+                            <button onClick={onClose} className="text-gray-400 hover:text-gray-600">
+                                <Icon name="x" size={24} />
+                            </button>
+                        </div>
+                        <div className="p-6">
+                            {children}
+                        </div>
+                    </div>
+                </div>
+            );
+        };
+
+        // --- Data Store Logic (Hybrid: LocalStorage + Supabase) ---
+
+        const useCostaleroStore = () => {
+            // -- Credentials --
+            const [supabaseCreds, setSupabaseCreds] = useState(() => {
+                const saved = localStorage.getItem('cofrade_sb_creds');
+                return saved ? JSON.parse(saved) : { url: '', key: '' };
+            });
+            const [supabaseClient, setSupabaseClient] = useState(null);
+            const [isOnline, setIsOnline] = useState(false);
+            const [syncStatus, setSyncStatus] = useState('idle'); // idle, syncing, success, error
+
+            // -- App State --
+            const [pasos, setPasos] = useState(() => {
+                const saved = localStorage.getItem('cofrade_pasos');
+                return saved ? JSON.parse(saved) : [{ id: 'default', name: 'Mi Paso', type: 'Cristo' }];
+            });
+
+            const [currentPasoId, setCurrentPasoId] = useState(() => {
+                return localStorage.getItem('cofrade_current_paso') || 'default';
+            });
+
+            const [members, setMembers] = useState(() => {
+                const saved = localStorage.getItem('cofrade_members');
+                let parsed = saved ? JSON.parse(saved) : [];
+                return parsed.map(m => m.pasoId ? m : { ...m, pasoId: 'default' });
+            });
+
+            const [igualaData, setIgualaData] = useState(() => {
+                const saved = localStorage.getItem('cofrade_iguala_multi');
+                let data = saved ? JSON.parse(saved) : { 'default': { rows: 8, count: 6, assignments: {} } };
+                // Fix legacy
+                Object.keys(data).forEach(id => {
+                    if (!data[id].count) data[id].count = 6;
+                });
+                return data;
+            });
+
+            const [events, setEvents] = useState(() => {
+                const saved = localStorage.getItem('cofrade_events');
+                let parsed = saved ? JSON.parse(saved) : [];
+                return parsed.map(e => e.pasoId ? e : { ...e, pasoId: 'all' });
+            });
+
+            const [backgroundImages, setBackgroundImages] = useState(() => {
+                const legacy = localStorage.getItem('cofrade_bg_image');
+                const saved = localStorage.getItem('cofrade_bg_images');
+                if (saved) return JSON.parse(saved);
+                // Migration: If legacy exists, we can't easily assign it without pasoids loaded, 
+                // but initialization order matters. We'll start empty or migrating later if needed.
+                // For now, let's just start empty or with legacy if we want to be fancy, but simple is better.
+                return {};
+            });
+
+            // -- Initialization --
+
+            useEffect(() => {
+                if (supabaseCreds.url && supabaseCreds.key) {
+                    try {
+                        const client = createClient(supabaseCreds.url, supabaseCreds.key);
+                        setSupabaseClient(client);
+                        setIsOnline(true);
+                        // Initial Fetch
+                        fetchFromSupabase(client);
+                    } catch (e) {
+                        console.error("Supabase init error", e);
+                        setIsOnline(false);
+                    }
+                } else {
+                    setSupabaseClient(null);
+                    setIsOnline(false);
+                }
+            }, [supabaseCreds]);
+
+            // -- Persistence (Local) --
+            useEffect(() => localStorage.setItem('cofrade_pasos', JSON.stringify(pasos)), [pasos]);
+            useEffect(() => localStorage.setItem('cofrade_current_paso', currentPasoId), [currentPasoId]);
+            useEffect(() => localStorage.setItem('cofrade_members', JSON.stringify(members)), [members]);
+            useEffect(() => localStorage.setItem('cofrade_iguala_multi', JSON.stringify(igualaData)), [igualaData]);
+            useEffect(() => localStorage.setItem('cofrade_events', JSON.stringify(events)), [events]);
+            useEffect(() => localStorage.setItem('cofrade_sb_creds', JSON.stringify(supabaseCreds)), [supabaseCreds]);
+            useEffect(() => localStorage.setItem('cofrade_bg_images', JSON.stringify(backgroundImages)), [backgroundImages]);
+
+
+            // -- Supabase Sync Functions --
+
+            const fetchFromSupabase = async (client) => {
+                if (!client) return;
+                setSyncStatus('syncing');
+                try {
+                    // Fetch in parallel
+                    const [resPasos, resMembers, resIguala, resEvents] = await Promise.all([
+                        client.from('pasos').select('*'),
+                        client.from('members').select('*'),
+                        client.from('iguala').select('*'),
+                        client.from('events').select('*')
+                    ]);
+
+                    if (resPasos.data && resPasos.data.length > 0) {
+                        setPasos(resPasos.data);
+                        // If current ID doesn't exist in remote, reset to first
+                        if (!resPasos.data.find(p => p.id === currentPasoId)) {
+                            setCurrentPasoId(resPasos.data[0].id);
+                        }
+                    }
+                    if (resMembers.data) {
+                        // Map snake_case to camelCase
+                        const mappedMembers = resMembers.data.map(m => ({
+                            id: m.id,
+                            pasoId: m.paso_id,
+                            dni: m.dni,
+                            name: m.name,
+                            nickname: m.nickname,
+                            address: m.address,
+                            height: m.height,
+                            phone: m.phone,
+                            position: m.position,
+                            status: m.status || 'titular',  // Default to titular
+                            startYear: m.start_year
+                        }));
+                        setMembers(mappedMembers);
+                    }
+                    if (resIguala.data) {
+                        const newIguala = {};
+                        resIguala.data.forEach(row => {
+                            newIguala[row.paso_id] = {
+                                ...row.config, // { rows: X, count: Y }
+                                assignments: row.assignments // { "1-1": "id" }
+                            };
+                        });
+                        setIgualaData(prev => ({ ...prev, ...newIguala }));
+                    }
+                    if (resEvents.data) {
+                        const mappedEvents = resEvents.data.map(e => ({
+                            id: e.id,
+                            pasoId: e.paso_id,
+                            title: e.title,
+                            date: e.date,
+                            type: e.type
+                        }));
+                        setEvents(mappedEvents);
+                    }
+                    setSyncStatus('success');
+                } catch (error) {
+                    console.error("Fetch error", error);
+                    setSyncStatus('error');
+                }
+            };
+
+            const toggleOnline = (url, key) => {
+                if (!url || !key) {
+                    if (confirm("¿Desconectar de la base de datos? Volverás al modo Offline.")) {
+                        setSupabaseCreds({ url: '', key: '' });
+                    }
+                } else {
+                    setSupabaseCreds({ url, key });
+                }
+            };
+
+            // -- Actions (Optimistic UI updates) --
+
+            const createPaso = async (name, type) => {
+                const newId = Date.now().toString();
+                const newPaso = { id: newId, name, type };
+
+                setPasos([...pasos, newPaso]);
+                setIgualaData(prev => ({ ...prev, [newId]: { rows: 8, count: 6, assignments: {} } }));
+                setCurrentPasoId(newId);
+
+                if (supabaseClient) {
+                    await supabaseClient.from('pasos').insert([{ id: newId, name, type }]);
+                    // Initialize empty iguala entry
+                    await supabaseClient.from('iguala').insert([{
+                        paso_id: newId,
+                        config: { rows: 8, count: 6 },
+                        assignments: {}
+                    }]);
+                }
+            };
+
+            const updatePaso = async (id, newName) => {
+                setPasos(pasos.map(p => p.id === id ? { ...p, name: newName } : p));
+
+                if (supabaseClient) {
+                    await supabaseClient.from('pasos').update({ name: newName }).eq('id', id);
+                }
+            };
+
+            const deletePaso = async (id) => {
+                if (pasos.length <= 1) return alert("No puedes borrar el último paso.");
+                if (!confirm("¿Seguro que quieres borrar este paso y todos sus datos?")) return;
+
+                setPasos(pasos.filter(p => p.id !== id));
+                setMembers(members.filter(m => m.pasoId !== id));
+                setIgualaData(prev => {
+                    const next = { ...prev };
+                    delete next[id];
+                    return next;
+                });
+
+                if (currentPasoId === id) setCurrentPasoId(pasos.find(p => p.id !== id).id);
+
+                if (supabaseClient) {
+                    await supabaseClient.from('pasos').delete().eq('id', id);
+                    // Cascade should handle members/iguala/events but we rely on defined schema cascade or manually delete
+                    await supabaseClient.from('members').delete().eq('paso_id', id);
+                    await supabaseClient.from('iguala').delete().eq('paso_id', id);
+                    await supabaseClient.from('events').delete().eq('paso_id', id);
+                }
+            };
+
+            const addMember = async (member) => {
+                const newId = Date.now().toString();
+                const status = member.status || 'titular';
+                const fullMember = { ...member, id: newId, pasoId: currentPasoId, status };
+                setMembers([...members, fullMember]);
+
+                if (supabaseClient) {
+                    await supabaseClient.from('members').insert([{
+                        id: newId,
+                        paso_id: currentPasoId,
+                        dni: member.dni,
+                        name: member.name,
+                        nickname: member.nickname,
+                        address: member.address,
+                        height: member.height,
+                        phone: member.phone,
+                        position: member.position,
+                        status: status,
+                        start_year: member.startYear,
+                        trabajadera: member.trabajadera
+                    }]);
+                }
+            };
+
+            const updateMember = async (id, updated) => {
+                setMembers(members.map(m => m.id === id ? { ...m, ...updated } : m));
+
+                if (supabaseClient) {
+                    await supabaseClient.from('members').update({
+                        dni: updated.dni,
+                        name: updated.name,
+                        nickname: updated.nickname,
+                        address: updated.address,
+                        height: updated.height,
+                        phone: updated.phone,
+                        position: updated.position,
+                        status: updated.status,
+                        start_year: updated.startYear,
+                        trabajadera: updated.trabajadera
+                    }).eq('id', id);
+                }
+            };
+
+            const deleteMember = async (id) => {
+                setMembers(members.filter(m => m.id !== id));
+                // Remove from assignments locally
+                const newIguala = { ...igualaData };
+                const pasoIguala = { ...newIguala[currentPasoId] };
+                const newAssignments = { ...pasoIguala.assignments };
+                Object.keys(newAssignments).forEach(key => {
+                    if (newAssignments[key] === id) delete newAssignments[key];
+                });
+                pasoIguala.assignments = newAssignments;
+                newIguala[currentPasoId] = pasoIguala;
+                setIgualaData(newIguala);
+
+                if (supabaseClient) {
+                    await supabaseClient.from('members').delete().eq('id', id);
+                    // Update Iguala blob
+                    await supabaseClient.from('iguala').upsert({
+                        paso_id: currentPasoId,
+                        config: { rows: pasoIguala.rows, count: pasoIguala.count },
+                        assignments: pasoIguala.assignments
+                    });
+                }
+            };
+
+            const promoteAspirante = async (member) => {
+                if (!confirm(`¿Ascender a ${member.name} a Costalero (Titular)?`)) return;
+                await updateMember(member.id, { ...member, status: 'titular' });
+            };
+
+            // Unified Iguala Update (Config or Assignment)
+            const updateIgualaData = async (newDataObj) => {
+                setIgualaData(prev => ({
+                    ...prev,
+                    [currentPasoId]: newDataObj
+                }));
+
+                if (supabaseClient) {
+                    await supabaseClient.from('iguala').upsert({
+                        paso_id: currentPasoId,
+                        config: { rows: newDataObj.rows, count: newDataObj.count },
+                        assignments: newDataObj.assignments
+                    });
+                }
+            }
+
+            const setIgualaConfig = (config) => {
+                const updated = { ...igualaData[currentPasoId], ...config };
+                updateIgualaData(updated);
+            };
+
+            const assignSpot = (rowIdx, spotIdx, memberId) => {
+                const current = igualaData[currentPasoId];
+                const updated = {
+                    ...current,
+                    assignments: { ...current.assignments, [`${rowIdx}-${spotIdx}`]: memberId }
+                };
+                updateIgualaData(updated);
+            };
+
+            const unassignSpot = (rowIdx, spotIdx) => {
+                const current = igualaData[currentPasoId];
+                const newAssign = { ...current.assignments };
+                delete newAssign[`${rowIdx}-${spotIdx}`];
+                const updated = { ...current, assignments: newAssign };
+                updateIgualaData(updated);
+            };
+
+            const createEvent = async (event) => {
+                const newId = Date.now().toString();
+                const newEvent = { ...event, id: newId };
+                setEvents([...events, newEvent]);
+
+                if (supabaseClient) {
+                    await supabaseClient.from('events').insert([{
+                        id: newId,
+                        paso_id: event.pasoId,
+                        title: event.title,
+                        date: event.date,
+                        type: event.type
+                    }]);
+                }
+            };
+
+            const setPasoImage = (imageData) => {
+                setBackgroundImages(prev => {
+                    const next = { ...prev };
+                    if (imageData) next[currentPasoId] = imageData;
+                    else delete next[currentPasoId];
+                    return next;
+                });
+            };
+
+            const currentMembers = useMemo(() => members.filter(m => m.pasoId === currentPasoId && (m.status === 'titular' || !m.status)), [members, currentPasoId]);
+            const currentAspirantes = useMemo(() => members.filter(m => m.pasoId === currentPasoId && m.status === 'aspirante'), [members, currentPasoId]);
+
+            return {
+                pasos, currentPasoId, setCurrentPasoId, createPaso, deletePaso, updatePaso, currentPaso: pasos.find(p => p.id === currentPasoId) || pasos[0],
+                members, currentMembers, currentAspirantes, addMember, updateMember, deleteMember, promoteAspirante,
+                igualaData, currentIguala: igualaData[currentPasoId] || { rows: 8, count: 6, assignments: {} },
+                setIgualaConfig, assignSpot, unassignSpot,
+                events, createEvent,
+                // Persistence
+                isOnline, toggleOnline, syncStatus, setSyncStatus, supabaseCreds,
+                backgroundImages, setPasoImage, currentBgImage: backgroundImages[currentPasoId]
+            };
+        };
+
+        // --- Views ---
+
+        const SettingsView = ({ store }) => {
+            const [url, setUrl] = useState(store.supabaseCreds.url || '');
+            const [key, setKey] = useState(store.supabaseCreds.key || '');
+
+            const handleConnect = (e) => {
+                e.preventDefault();
+                store.toggleOnline(url, key);
+            };
+
+            const exportData = () => {
+                const data = {
+                    pasos: store.pasos,
+                    members: store.members,
+                    iguala: store.igualaData,
+                    events: store.events,
+                    date: new Date().toISOString()
+                };
+                const blob = new Blob([JSON.stringify(data, null, 2)], { type: "application/json" });
+                const href = URL.createObjectURL(blob);
+                const link = document.createElement("a");
+                link.href = href;
+                link.download = `cofrade_backup_${new Date().toLocaleDateString().replace(/\//g, '-')}.json`;
+                document.body.appendChild(link);
+                link.click();
+                document.body.removeChild(link);
+            };
+
+            const importData = (e) => {
+                const file = e.target.files[0];
+                if (!file) return;
+                const reader = new FileReader();
+                reader.onload = (e) => {
+                    try {
+                        const data = JSON.parse(e.target.result);
+                        if (confirm("Esto sobrescribirá TODOS tus datos locales. ¿Estás seguro?")) {
+                            localStorage.setItem('cofrade_pasos', JSON.stringify(data.pasos));
+                            localStorage.setItem('cofrade_members', JSON.stringify(data.members));
+                            localStorage.setItem('cofrade_iguala_multi', JSON.stringify(data.iguala));
+                            localStorage.setItem('cofrade_events', JSON.stringify(data.events));
+                            alert("Importación exitosa. Recarga la página.");
+                            window.location.reload();
+                        }
+                    } catch (err) {
+                        alert("Error al leer el archivo. Formato inválido.");
+                    }
+                };
+                reader.readAsText(file);
+            };
+
+            return (
+                <div className="space-y-8 max-w-2xl mx-auto">
+                    <header>
+                        <h2 className="text-3xl font-bold text-cofrade-dark">Configuración</h2>
+                        <p className="text-cofrade-muted">Gestiona la conexión a la base de datos y copias de seguridad.</p>
+                    </header>
+
+                    <Card>
+                        <h3 className="text-xl font-bold mb-4 flex items-center gap-2">
+                            <Icon name="database" className="text-cofrade-purple" /> Conexión Online (Supabase)
+                        </h3>
+                        {store.isOnline ? (
+                            <div className="bg-green-50 border border-green-200 text-green-800 p-4 rounded-lg flex justify-between items-center">
+                                <div className="flex items-center gap-3">
+                                    <div className="w-3 h-3 bg-green-500 rounded-full animate-pulse"></div>
+                                    <span className="font-semibold">Conectado a la Nube</span>
+                                </div>
+                                <Button variant="danger" onClick={() => store.toggleOnline('', '')}>Desconectar</Button>
+                            </div>
+                        ) : (
+                            <form onSubmit={handleConnect} className="space-y-4">
+                                <p className="text-sm text-gray-500 mb-4">
+                                    Introduce tus credenciales de Supabase para activar la sincronización en la nube.
+                                    Si no tienes, la app funcionará en modo Local.
+                                </p>
+                                <div>
+                                    <label className="block text-sm font-medium text-gray-700 mb-1">Supabase Project URL</label>
+                                    <input required type="url" className="w-full px-3 py-2 border border-blue-200 rounded-lg bg-blue-50 focus:bg-white transition-colors"
+                                        placeholder="https://xyz.supabase.co"
+                                        value={url} onChange={e => setUrl(e.target.value)} />
+                                </div>
+                                <div>
+                                    <label className="block text-sm font-medium text-gray-700 mb-1">Supabase API Key (Anon/Public)</label>
+                                    <input required type="password" className="w-full px-3 py-2 border border-blue-200 rounded-lg bg-blue-50 focus:bg-white transition-colors"
+                                        placeholder="eyJxh..."
+                                        value={key} onChange={e => setKey(e.target.value)} />
+                                </div>
+                                <div className="pt-2">
+                                    <Button type="submit" className="w-full">Conectar DB</Button>
+                                </div>
+                            </form>
+                        )}
+                    </Card>
+
+                    <Card>
+                        <h3 className="text-xl font-bold mb-4 flex items-center gap-2">
+                            <Icon name="save" className="text-slate-600" /> Copias de Seguridad
+                        </h3>
+                        <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                            <div className="p-4 border border-slate-200 rounded-lg hover:bg-slate-50 transition-colors cursor-pointer text-center"
+                                onClick={exportData}>
+                                <Icon name="download" className="mx-auto mb-2 text-cofrade-purple" size={32} />
+                                <h4 className="font-bold">Exportar Datos</h4>
+                                <p className="text-xs text-gray-500 mt-1">Descarga un archivo JSON con toda tu información.</p>
+                            </div>
+                            <label className="p-4 border border-slate-200 rounded-lg hover:bg-slate-50 transition-colors cursor-pointer text-center block relative">
+                                <input type="file" accept=".json" onChange={importData} className="hidden" />
+                                <Icon name="upload" className="mx-auto mb-2 text-cofrade-gold" size={32} />
+                                <h4 className="font-bold">Importar Datos</h4>
+                                <p className="text-xs text-gray-500 mt-1">Restaura una copia de seguridad (JSON).</p>
+                            </label>
+                        </div>
+                    </Card>
+
+                    <Card>
+                        <h3 className="text-xl font-bold mb-4 flex items-center gap-2">
+                            <Icon name="image" className="text-cofrade-purple" /> Personalización
+                        </h3>
+                        <div className="space-y-4">
+                            <div>
+                                <label className="block text-sm font-medium text-gray-700 mb-2">Imagen de Fondo ({store.currentPaso.name})</label>
+                                <div className="flex items-center gap-4">
+                                    <label className="flex items-center gap-2 px-4 py-2 border border-slate-300 rounded-lg cursor-pointer hover:bg-slate-50 shadow-sm bg-white">
+                                        <Icon name="upload" size={16} />
+                                        <span className="text-sm font-medium">Subir Imagen</span>
+                                        <input type="file" accept="image/*" className="hidden" onChange={(e) => {
+                                            const file = e.target.files[0];
+                                            if (file) {
+                                                const reader = new FileReader();
+                                                reader.onload = (ev) => store.setPasoImage(ev.target.result);
+                                                reader.readAsDataURL(file);
+                                            }
+                                        }} />
+                                    </label>
+                                    {store.currentBgImage && (
+                                        <Button variant="danger" onClick={() => store.setPasoImage(null)}>
+                                            <Icon name="trash" size={16} /> Eliminar
+                                        </Button>
+                                    )}
+                                </div>
+                                <p className="text-xs text-slate-500 mt-2">La imagen se mostrará difuminada en el fondo de toda la aplicación.</p>
+                            </div>
+                        </div>
+                    </Card>
+                </div >
+            );
+        };
+
+        const Dashboard = ({ store, setView }) => {
+            const avgHeight = store.currentMembers.length
+                ? (store.currentMembers.reduce((acc, m) => acc + Number(m.height), 0) / store.currentMembers.length).toFixed(1)
+                : 0;
+
+            return (
+                <div className="space-y-6">
+                    <header className="mb-8 flex justify-between items-end">
+                        <div className="flex items-center gap-4">
+                            <div>
+                                <h1 className="text-3xl font-bold text-cofrade-dark">{store.currentPaso.name}</h1>
+                                <p className="text-cofrade-muted">Panel de control de la cuadrilla</p>
+                            </div>
+                            {store.isOnline && (
+                                <span className="bg-green-100 text-green-700 px-2 py-1 rounded text-xs font-bold flex items-center gap-1 border border-green-200">
+                                    <div className="w-2 h-2 rounded-full bg-green-500 animate-pulse"></div> Online
+                                </span>
+                            )}
+                        </div>
+                        <div className="bg-purple-100 text-cofrade-purple px-3 py-1 rounded-full text-sm font-bold uppercase tracking-wider">
+                            {store.currentPaso.type}
+                        </div>
+                    </header>
+
+                    <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
+                        <Card className="border-l-4 border-cofrade-purple">
+                            <div className="flex items-center justify-between">
+                                <div>
+                                    <p className="text-sm font-medium text-gray-500 uppercase">Miembros</p>
+                                    <p className="text-4xl font-bold text-cofrade-dark mt-1">{store.currentMembers.length}</p>
+                                </div>
+                                <div className="p-3 bg-purple-100 rounded-full text-cofrade-purple">
+                                    <Icon name="users" size={32} />
+                                </div>
+                            </div>
+                        </Card>
+                        <Card className="border-l-4 border-cofrade-gold">
+                            <div className="flex items-center justify-between">
+                                <div>
+                                    <p className="text-sm font-medium text-gray-500 uppercase">Altura Media</p>
+                                    <p className="text-4xl font-bold text-cofrade-dark mt-1">{avgHeight} <span className="text-base text-gray-400 font-normal">cm</span></p>
+                                </div>
+                                <div className="p-3 bg-yellow-100 rounded-full text-yellow-600">
+                                    <Icon name="ruler" size={32} />
+                                </div>
+                            </div>
+                        </Card>
+                        <Card className="border-l-4 border-blue-500">
+                            <div className="flex items-center justify-between">
+                                <div>
+                                    <p className="text-sm font-medium text-gray-500 uppercase">Agenda</p>
+                                    <p className="text-4xl font-bold text-cofrade-dark mt-1">{store.events.length}</p>
+                                </div>
+                                <div className="p-3 bg-blue-100 rounded-full text-blue-600">
+                                    <Icon name="calendar" size={32} />
+                                </div>
+                            </div>
+                        </Card>
+                    </div>
+
+                    <div className="grid grid-cols-1 md:grid-cols-2 gap-6 mt-8">
+                        <div onClick={() => setView('iguala')} className="cursor-pointer group relative overflow-hidden rounded-xl bg-gradient-to-br from-cofrade-purple to-purple-800 p-8 text-white shadow-lg transition-transform hover:scale-[1.01]">
+                            <Icon name="layout-grid" className="mb-4 opacity-80" size={32} />
+                            <h3 className="text-2xl font-bold">La Igualá</h3>
+                            <p className="opacity-80 mt-1">Ver distribución de trabajaderas</p>
+                        </div>
+                        <div onClick={() => setView('members')} className="cursor-pointer group relative overflow-hidden rounded-xl bg-white border border-gray-200 p-8 text-cofrade-dark shadow-sm transition-transform hover:scale-[1.01]">
+                            <Icon name="user-plus" className="mb-4 text-cofrade-purple" size={32} />
+                            <h3 className="text-2xl font-bold">Costaleros</h3>
+                            <p className="text-gray-500 mt-1">Gestionar altas y bajas</p>
+                        </div>
+                    </div>
+                </div>
+            );
+        };
+
+        const MembersView = ({ store }) => {
+            const [isModalOpen, setIsModalOpen] = useState(false);
+            const [editingId, setEditingId] = useState(null);
+            const [formData, setFormData] = useState({
+                dni: '', name: '', nickname: '', address: '', height: '', phone: '', position: 'Costero'
+            });
+
+            const handleSubmit = (e) => {
+                e.preventDefault();
+                if (editingId) {
+                    store.updateMember(editingId, formData);
+                } else {
+                    store.addMember(formData);
+                }
+                closeModal();
+            };
+
+            const getAssignment = (memberId) => {
+                if (!store.currentIguala?.assignments) return null;
+                const entry = Object.entries(store.currentIguala.assignments).find(([k, v]) => v === memberId);
+                if (!entry) return null;
+                const [row, spot] = entry[0].split('-');
+                return { row: parseInt(row), spot: parseInt(spot) };
+            };
+
+            const getSpotLabel = (row, spot) => {
+                const rowCount = store.currentIguala.rows || 1;
+                const spotsPerRow = store.currentIguala.count || 6;
+                const isFirstLastRow = row === 1 || row === rowCount;
+                const isOuter = spot === 1 || spot === spotsPerRow;
+                const isNextOuter = spot === 2 || spot === spotsPerRow - 1;
+
+                if (isOuter) return isFirstLastRow ? "Patero" : "Costero";
+                if (isNextOuter) return "Fijador";
+                return "Corriente";
+            };
+
+            const openEdit = (member) => {
+                setFormData({
+                    dni: member.dni || '',
+                    name: member.name,
+                    nickname: member.nickname || '',
+                    address: member.address || '',
+                    height: member.height,
+                    phone: member.phone || '',
+                    position: member.position || 'Costero'
+                });
+                setEditingId(member.id);
+                setIsModalOpen(true);
+            };
+
+            const isEqual = (a, b) => JSON.stringify(a) === JSON.stringify(b);
+
+            const handleExport = () => {
+                const headers = ["DNI", "Nombre", "Teléfono", "Altura", "Trabajadera", "Puesto", "Año Ingreso"];
+                const data = store.currentMembers.map(m => {
+                    const assign = getAssignment(m.id);
+                    const trab = assign ? `T-${assign.row}` : (m.trabajadera || '-');
+                    const pos = assign ? getSpotLabel(assign.row, assign.spot) : m.position;
+                    return [
+                        m.dni || '',
+                        m.name,
+                        m.phone || '',
+                        `${m.height} cm`,
+                        trab,
+                        pos,
+                        m.startYear || '-'
+                    ];
+                });
+                exportToPDF(`Listado Costaleros: ${store.currentPaso.name}`, headers, data, `costaleros_${store.currentPaso.name}.pdf`);
+            };
+
+            const closeModal = () => {
+                setIsModalOpen(false);
+                setEditingId(null);
+                setFormData({ dni: '', name: '', nickname: '', address: '', height: '', phone: '', position: 'Costero', startYear: '' });
+            };
+
+            return (
+                <div className="space-y-6">
+                    <div className="flex justify-between items-center">
+                        <h2 className="text-2xl font-bold text-cofrade-dark">Cuadrilla: {store.currentPaso.name}</h2>
+                        <div className="flex gap-2">
+                            <Button onClick={handleExport} variant="ghost" className="bg-white border hover:bg-slate-50 text-slate-600">
+                                <Icon name="file-down" size={18} /> PDF
+                            </Button>
+                            <Button onClick={() => setIsModalOpen(true)} variant="primary">
+                                <Icon name="plus" size={18} /> Nuevo Costalero
+                            </Button>
+                        </div>
+                    </div>
+
+                    <div className="bg-white rounded-xl shadow-sm border border-slate-200 overflow-hidden">
+                        <table className="w-full text-left border-collapse">
+                            <thead className="bg-slate-50 text-slate-500 font-semibold uppercase text-xs">
+                                <tr>
+                                    <th className="p-4">Costalero</th>
+                                    <th className="p-4 hidden md:table-cell">Contacto</th>
+                                    <th className="p-4">Altura</th>
+                                    <th className="p-4">Trab.</th>
+                                    <th className="p-4">Puesto</th>
+                                    <th className="p-4">Año Ingreso</th>
+                                    <th className="p-4 text-right">Acciones</th>
+                                </tr>
+                            </thead>
+                            <tbody className="divide-y divide-slate-100">
+                                {store.currentMembers.length === 0 ? (
+                                    <tr>
+                                        <td colSpan="5" className="p-8 text-center text-gray-400">
+                                            No hay costaleros registrados en este paso.
+                                        </td>
+                                    </tr>
+                                ) : store.currentMembers.map(member => (
+                                    <tr key={member.id} className="hover:bg-slate-50 transition-colors">
+                                        <td className="p-4">
+                                            <div className="font-bold text-slate-800">{member.name}</div>
+                                            {member.nickname && <div className="text-xs text-cofrade-purple font-medium">"{member.nickname}"</div>}
+                                            <div className="text-xs text-gray-400 uppercase mt-0.5">{member.dni}</div>
+                                        </td>
+                                        <td className="p-4 hidden md:table-cell">
+                                            <div className="text-sm text-slate-600 flex items-center gap-1">
+                                                <Icon name="phone" size={12} /> {member.phone}
+                                            </div>
+                                            {member.address && (
+                                                <div className="text-xs text-slate-400 mt-1 flex items-center gap-1">
+                                                    <Icon name="map-pin" size={12} /> {member.address}
+                                                </div>
+                                            )}
+                                        </td>
+                                        <td className="p-4 text-slate-600 font-medium">{member.height} cm</td>
+                                        <td className="p-4 font-bold text-slate-700 text-center">
+                                            {(() => {
+                                                const assign = getAssignment(member.id);
+                                                return assign ? `T-${assign.row}` : (member.trabajadera || '-');
+                                            })()}
+                                        </td>
+                                        <td className="p-4">
+                                            <span className="bg-purple-50 text-cofrade-purple px-2 py-1 rounded-md text-xs font-semibold uppercase tracking-wide">
+                                                {(() => {
+                                                    const assign = getAssignment(member.id);
+                                                    return assign ? getSpotLabel(assign.row, assign.spot) : member.position;
+                                                })()}
+                                            </span>
+                                        </td>
+                                        <td className="p-4 text-slate-600 font-medium">
+                                            {member.startYear || '-'}
+                                        </td>
+                                        <td className="p-4 text-right">
+                                            <button onClick={() => openEdit(member)} className="text-blue-500 hover:text-blue-700 mr-3">
+                                                <Icon name="pencil" size={18} />
+                                            </button>
+                                            <button onClick={() => { if (confirm('¿Borrar costalero?')) store.deleteMember(member.id) }} className="text-red-400 hover:text-red-600">
+                                                <Icon name="trash-2" size={18} />
+                                            </button>
+                                        </td>
+                                    </tr>
+                                ))}
+                            </tbody>
+                        </table>
+                    </div>
+
+                    <Modal isOpen={isModalOpen} onClose={closeModal} title={editingId ? "Editar Costalero" : "Nuevo Costalero"}>
+                        <form onSubmit={handleSubmit} className="space-y-4">
+                            <div className="grid grid-cols-3 gap-4">
+                                <div className="col-span-1">
+                                    <label className="block text-sm font-medium text-gray-700 mb-1">DNI</label>
+                                    <input required type="text" className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-cofrade-purple focus:border-transparent outline-none uppercase"
+                                        value={formData.dni} onChange={e => setFormData({ ...formData, dni: e.target.value })} placeholder="12345678A" />
+                                </div>
+                                <div className="col-span-2">
+                                    <label className="block text-sm font-medium text-gray-700 mb-1">Nombre Completo</label>
+                                    <input required type="text" className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-cofrade-purple focus:border-transparent outline-none"
+                                        value={formData.name} onChange={e => setFormData({ ...formData, name: e.target.value })} placeholder="Ej: Juan Pérez" />
+                                </div>
+                            </div>
+
+                            <div className="grid grid-cols-2 gap-4">
+                                <div>
+                                    <label className="block text-sm font-medium text-gray-700 mb-1">Apodo / Mote</label>
+                                    <input type="text" className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-cofrade-purple focus:border-transparent outline-none"
+                                        value={formData.nickname} onChange={e => setFormData({ ...formData, nickname: e.target.value })} placeholder='Ej: "El Largo"' />
+                                </div>
+                                <div>
+                                    <label className="block text-sm font-medium text-gray-700 mb-1">Teléfono</label>
+                                    <input type="tel" className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-cofrade-purple focus:border-transparent outline-none"
+                                        value={formData.phone} onChange={e => setFormData({ ...formData, phone: e.target.value })} placeholder="600000000" />
+                                </div>
+                            </div>
+
+                            <div>
+                                <label className="block text-sm font-medium text-gray-700 mb-1">Dirección</label>
+                                <input type="text" className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-cofrade-purple focus:border-transparent outline-none"
+                                    value={formData.address} onChange={e => setFormData({ ...formData, address: e.target.value })} placeholder="C/ Gran Poder, 2" />
+                            </div>
+
+                            <div className="grid grid-cols-2 gap-4">
+                                <div>
+                                    <label className="block text-sm font-medium text-gray-700 mb-1">Altura (cm)</label>
+                                    <input required type="number" className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-cofrade-purple focus:border-transparent outline-none"
+                                        value={formData.height} onChange={e => setFormData({ ...formData, height: e.target.value })} placeholder="175" />
+                                </div>
+                                <div>
+                                    <label className="block text-sm font-medium text-gray-700 mb-1">Trab. (Opcional)</label>
+                                    <input type="number" className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-cofrade-purple focus:border-transparent outline-none"
+                                        value={formData.trabajadera || ''} onChange={e => setFormData({ ...formData, trabajadera: e.target.value })} placeholder="-" />
+                                </div>
+                                <div>
+                                    <label className="block text-sm font-medium text-gray-700 mb-1">Año Ingreso</label>
+                                    <input type="number" min="1900" max="2100" className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-cofrade-purple focus:border-transparent outline-none"
+                                        value={formData.startYear} onChange={e => setFormData({ ...formData, startYear: e.target.value })} placeholder="2020" />
+                                </div>
+                                <div className="col-span-2">
+                                    <label className="block text-sm font-medium text-gray-700 mb-1">Puesto Preferido</label>
+                                    <select className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-cofrade-purple focus:border-transparent outline-none bg-white"
+                                        value={formData.position} onChange={e => setFormData({ ...formData, position: e.target.value })}>
+                                        <option value="Patero">Patero</option>
+                                        <option value="Fijador">Fijador</option>
+                                        <option value="Costero">Costero</option>
+                                        <option value="Corriente">Corriente</option>
+                                    </select>
+                                </div>
+                            </div>
+                            <div className="pt-4 flex justify-end gap-2">
+                                <Button type="button" variant="ghost" onClick={closeModal}>Cancelar</Button>
+                                <Button type="submit">{editingId ? 'Guardar Cambios' : 'Registrar'}</Button>
+                            </div>
+                        </form>
+                    </Modal>
+                </div>
+            );
+        };
+
+        const IgualaView = ({ store }) => {
+            const [selectedMemberId, setSelectedMemberId] = useState('');
+
+            const rowCount = store.currentIguala.rows || 1;
+            const spotsPerRow = store.currentIguala.count || 6;
+            const rows = Array.from({ length: rowCount }, (_, i) => i + 1);
+            const spots = Array.from({ length: spotsPerRow }, (_, i) => i + 1);
+
+            // Filter unassigned members
+            const assignedIds = new Set(Object.values(store.currentIguala.assignments));
+            const availableMembers = store.currentMembers.filter(m => !assignedIds.has(m.id)).sort((a, b) => b.height - a.height);
+
+            const handleAssign = (rowIdx, spotIdx) => {
+                if (!selectedMemberId) return;
+                store.assignSpot(rowIdx, spotIdx, selectedMemberId);
+                setSelectedMemberId('');
+            };
+
+            const getSpotMember = (rowIdx, spotIdx) => {
+                const id = store.currentIguala.assignments[`${rowIdx}-${spotIdx}`];
+                return store.members.find(m => m.id === id);
+            };
+
+            const getSpotLabel = (row, spot) => {
+                const isFirstLastRow = row === 1 || row === rowCount;
+                const isOuter = spot === 1 || spot === spotsPerRow;
+                const isNextOuter = spot === 2 || spot === spotsPerRow - 1;
+
+                if (isOuter) return isFirstLastRow ? "PATERO" : "COSTERO";
+                if (isNextOuter) return "FIJADOR";
+                return "CORR.";
+            };
+
+            return (
+                <div className="flex flex-col md:flex-row gap-6 h-[calc(100vh-140px)]">
+                    {/* Visualizer */}
+                    <div className="flex-1 bg-white rounded-xl shadow-sm border border-slate-200 p-6 overflow-y-auto">
+                        <header className="flex flex-wrap justify-between items-center mb-6 gap-4">
+                            <h2 className="text-2xl font-bold text-cofrade-dark">Plano: {store.currentPaso.name}</h2>
+                            <div className="flex gap-4">
+                                <div className="flex items-center gap-2">
+                                    <label className="text-sm text-gray-600 font-bold">Trabajaderas:</label>
+                                    <input type="number" min="1" max="15" className="w-16 px-2 py-1 border rounded text-center"
+                                        value={rowCount} onChange={(e) => store.setIgualaConfig({ rows: Math.max(1, parseInt(e.target.value) || 1) })} />
+                                </div>
+                                <div className="flex items-center gap-2">
+                                    <label className="text-sm text-gray-600 font-bold">Costaleros/Palo:</label>
+                                    <input type="number" min="3" max="12" className="w-16 px-2 py-1 border rounded text-center"
+                                        value={spotsPerRow} onChange={(e) => {
+                                            const val = Math.max(3, Math.min(12, parseInt(e.target.value) || 6));
+                                            store.setIgualaConfig({ count: val });
+                                        }} />
+                                </div>
+                            </div>
+                        </header>
+
+                        <div className="space-y-4 max-w-4xl mx-auto pb-10">
+                            <div className="w-full h-4 bg-cofrade-gold/30 rounded-full mb-8 flex items-center justify-center text-[10px] text-yellow-800 font-bold uppercase tracking-widest">Frontal del Paso</div>
+
+                            {rows.map((row) => (
+                                <div key={row} className="bg-slate-50 p-3 rounded-lg border border-slate-200">
+                                    <h4 className="text-xs font-bold text-gray-400 uppercase mb-2 text-center">Trabajadera {row}</h4>
+                                    <div className="flex justify-between gap-3">
+                                        {spots.map(spot => {
+                                            const member = getSpotMember(row, spot);
+                                            const label = getSpotLabel(row, spot);
+                                            const isPatero = label === 'PATERO' || label === 'COSTERO';
+
+                                            return (
+                                                <div key={spot} className="flex-1 flex flex-col gap-1 min-w-[60px]">
+                                                    <div
+                                                        className={`h-24 rounded-lg border-2 border-dashed transition-all flex flex-col items-center justify-center p-1 text-center cursor-pointer group relative
+                                                            ${selectedMemberId && !member ? 'border-cofrade-purple bg-purple-50 animate-pulse' : ''}
+                                                            ${member ? 'bg-white border-solid border-purple-200 shadow-sm' : 'border-slate-300 hover:border-gray-400'}`}
+                                                        onClick={() => !member ? handleAssign(row, spot) : null}
+                                                    >
+                                                        {member ? (
+                                                            <>
+                                                                <button
+                                                                    onClick={(e) => { e.stopPropagation(); store.unassignSpot(row, spot); }}
+                                                                    className="absolute -top-2 -right-2 bg-red-100 text-red-500 rounded-full p-1 opacity-0 group-hover:opacity-100 transition-opacity z-10 shadow-sm"
+                                                                >
+                                                                    <Icon name="x" size={12} />
+                                                                </button>
+                                                                <span className="font-bold text-xs md:text-sm text-cofrade-dark break-words w-full leading-tight">{member.name}</span>
+                                                                <span className="text-[10px] text-cofrade-purple font-medium mt-1">{member.height} cm</span>
+                                                            </>
+                                                        ) : (
+                                                            <span className={`text-[9px] uppercase font-bold tracking-tighter ${isPatero ? 'text-cofrade-purple' : 'text-gray-300'}`}>{label}</span>
+                                                        )}
+                                                    </div>
+                                                </div>
+                                            )
+                                        })}
+                                    </div>
+                                </div>
+                            ))}
+                        </div>
+                    </div>
+
+                    {/* Sidebar Palette */}
+                    <div className="w-full md:w-80 bg-white rounded-xl shadow-sm border border-slate-200 flex flex-col overflow-hidden max-h-[50vh] md:max-h-full">
+                        <div className="p-4 border-b border-gray-100 bg-gray-50">
+                            <h3 className="font-bold text-gray-700">Sin Asignar ({availableMembers.length})</h3>
+                        </div>
+                        <div className="p-2 overflow-y-auto flex-1 space-y-2">
+                            {availableMembers.length === 0 ? (
+                                <p className="text-center text-sm text-gray-400 py-8">Todos tienen hueco</p>
+                            ) : (
+                                selectedMemberId && (
+                                    <div className="bg-purple-50 border border-cofrade-purple p-3 rounded-lg flex justify-between items-center mb-2">
+                                        <span className="font-bold text-sm text-cofrade-purple">
+                                            {availableMembers.find(m => m.id === selectedMemberId)?.name}
+                                        </span>
+                                        <button onClick={() => setSelectedMemberId('')}><Icon name="x" size={16} /></button>
+                                    </div>
+                                )
+                            )}
+
+                            {availableMembers.map(member => (
+                                <div
+                                    key={member.id}
+                                    onClick={() => setSelectedMemberId(member.id)}
+                                    className={`p-3 rounded-lg border cursor-pointer transition-all hover:shadow-md flex justify-between items-center
+                                        ${selectedMemberId === member.id
+                                            ? 'hidden'
+                                            : 'bg-white border-slate-100 hover:border-purple-200'}`}
+                                >
+                                    <div>
+                                        <p className="font-medium text-sm">{member.name}</p>
+                                        <p className="text-xs text-gray-400">{member.position}</p>
+                                    </div>
+                                    <span className="font-bold text-sm text-slate-600">{member.height}</span>
+                                </div>
+                            ))}
+                        </div>
+                    </div>
+                </div>
+            );
+        };
+
+        const EventsView = ({ store }) => {
+            const [isModalOpen, setIsModalOpen] = useState(false);
+            const [formData, setFormData] = useState({ title: '', date: '', type: 'Ensayo', pasoId: 'all' });
+
+            const displayedEvents = store.events.filter(e => e.pasoId === 'all' || e.pasoId === store.currentPasoId);
+
+            const handleSubmit = (e) => {
+                e.preventDefault();
+                store.createEvent(formData);
+                setFormData({ title: '', date: '', type: 'Ensayo', pasoId: 'all' });
+                setIsModalOpen(false);
+            };
+
+            return (
+                <div className="space-y-6">
+                    <div className="flex justify-between items-center">
+                        <h2 className="text-2xl font-bold text-cofrade-dark">Calendario</h2>
+                        <Button onClick={() => setIsModalOpen(true)} variant="primary">
+                            <Icon name="plus" size={18} /> Nuevo Evento
+                        </Button>
+                    </div>
+
+                    <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
+                        {displayedEvents.map(event => (
+                            <Card key={event.id} className="relative overflow-hidden group">
+                                <div className={`absolute top-0 left-0 w-2 h-full ${event.type === 'Procesión' ? 'bg-cofrade-purple' : 'bg-cofrade-gold'}`}></div>
+                                <div className="ml-4">
+                                    <div className="flex gap-2 mb-2">
+                                        <span className={`text-xs font-bold uppercase tracking-wider px-2 py-1 rounded ${event.type === 'Procesión' ? 'bg-purple-100 text-purple-700' : 'bg-yellow-100 text-yellow-700'}`}>
+                                            {event.type}
+                                        </span>
+                                        {event.pasoId === 'all' && (
+                                            <span className="text-xs font-bold uppercase tracking-wider px-2 py-1 rounded bg-slate-100 text-slate-600">Global</span>
+                                        )}
+                                    </div>
+                                    <h3 className="text-xl font-bold text-slate-800">{event.title}</h3>
+                                    <div className="flex items-center text-gray-500 mt-2 text-sm">
+                                        <Icon name="calendar" size={14} className="mr-2" />
+                                        {new Date(event.date).toLocaleDateString()}
+                                    </div>
+                                </div>
+                            </Card>
+                        ))}
+                    </div>
+
+                    <Modal isOpen={isModalOpen} onClose={() => setIsModalOpen(false)} title="Nuevo Evento">
+                        <form onSubmit={handleSubmit} className="space-y-4">
+                            <div>
+                                <label className="block text-sm font-medium text-gray-700 mb-1">Título</label>
+                                <input required type="text" className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-cofrade-purple focus:border-transparent outline-none"
+                                    value={formData.title} onChange={e => setFormData({ ...formData, title: e.target.value })} placeholder="Ej: Primer Ensayo" />
+                            </div>
+                            <div>
+                                <label className="block text-sm font-medium text-gray-700 mb-1">Fecha</label>
+                                <input required type="date" className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-cofrade-purple focus:border-transparent outline-none"
+                                    value={formData.date} onChange={e => setFormData({ ...formData, date: e.target.value })} />
+                            </div>
+                            <div className="grid grid-cols-2 gap-4">
+                                <div>
+                                    <label className="block text-sm font-medium text-gray-700 mb-1">Tipo</label>
+                                    <select className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-cofrade-purple focus:border-transparent outline-none bg-white"
+                                        value={formData.type} onChange={e => setFormData({ ...formData, type: e.target.value })}>
+                                        <option value="Ensayo">Ensayo</option>
+                                        <option value="Procesión">Procesión</option>
+                                        <option value="Igualá">Igualá</option>
+                                        <option value="Reunión">Reunión</option>
+                                    </select>
+                                </div>
+                                <div>
+                                    <label className="block text-sm font-medium text-gray-700 mb-1">Asignar a</label>
+                                    <select className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-cofrade-purple focus:border-transparent outline-none bg-white"
+                                        value={formData.pasoId} onChange={e => setFormData({ ...formData, pasoId: e.target.value })}>
+                                        <option value="all">Toda la Hermandad</option>
+                                        {store.pasos.map(p => <option key={p.id} value={p.id}>{p.name}</option>)}
+                                    </select>
+                                </div>
+                            </div>
+                            <div className="pt-4 flex justify-end gap-2">
+                                <Button type="button" variant="ghost" onClick={() => setIsModalOpen(false)}>Cancelar</Button>
+                                <Button type="submit">Crear Evento</Button>
+                            </div>
+                        </form>
+                    </Modal>
+                </div>
+            )
+        }
+
+        const AspirantesView = ({ store }) => {
+            const [isModalOpen, setIsModalOpen] = useState(false);
+            const [editingId, setEditingId] = useState(null);
+            const [formData, setFormData] = useState({
+                dni: '', name: '', nickname: '', address: '', height: '', phone: '', position: 'Costero', status: 'aspirante', startYear: ''
+            });
+
+            const handleSubmit = (e) => {
+                e.preventDefault();
+                const memberData = { ...formData, status: 'aspirante' };
+                if (editingId) {
+                    store.updateMember(editingId, memberData);
+                } else {
+                    store.addMember(memberData);
+                }
+                closeModal();
+            };
+
+            const openEdit = (member) => {
+                setFormData({
+                    dni: member.dni || '',
+                    name: member.name,
+                    nickname: member.nickname || '',
+                    address: member.address || '',
+                    height: member.height,
+                    phone: member.phone || '',
+                    position: member.position || 'Costero',
+                    startYear: member.startYear || ''
+                });
+                setEditingId(member.id);
+                setIsModalOpen(true);
+            };
+
+            const handleExport = () => {
+                const headers = ["DNI", "Nombre", "Teléfono", "Altura", "Trabajadera", "Puesto", "Año 1ª Igualá"];
+                const data = store.currentAspirantes.map(m => [
+                    m.dni || '',
+                    m.name,
+                    m.phone || '',
+                    `${m.height} cm`,
+                    m.trabajadera || '-',
+                    m.position,
+                    m.startYear || '-'
+                ]);
+                exportToPDF(`Listado Aspirantes: ${store.currentPaso.name}`, headers, data, `aspirantes_${store.currentPaso.name}.pdf`);
+            };
+
+            const closeModal = () => {
+                setIsModalOpen(false);
+                setEditingId(null);
+                setFormData({ dni: '', name: '', nickname: '', address: '', height: '', phone: '', position: 'Costero', status: 'aspirante', startYear: '' });
+            };
+
+            return (
+                <div className="space-y-6">
+                    <div className="flex justify-between items-center">
+                        <h2 className="text-2xl font-bold text-cofrade-dark">Aspirantes: {store.currentPaso.name}</h2>
+                        <div className="flex gap-2">
+                            <Button onClick={handleExport} variant="ghost" className="bg-white border hover:bg-slate-50 text-slate-600">
+                                <Icon name="file-down" size={18} /> PDF
+                            </Button>
+                            <Button onClick={() => setIsModalOpen(true)} variant="primary">
+                                <Icon name="plus" size={18} /> Nuevo Aspirante
+                            </Button>
+                        </div>
+                    </div>
+
+                    <div className="bg-white rounded-xl shadow-sm border border-slate-200 overflow-hidden">
+                        <table className="w-full text-left border-collapse">
+                            <thead className="bg-slate-50 text-slate-500 font-semibold uppercase text-xs">
+                                <tr>
+                                    <th className="p-4">Aspirante</th>
+                                    <th className="p-4 hidden md:table-cell">Contacto</th>
+                                    <th className="p-4">Altura</th>
+                                    <th className="p-4">Trab.</th>
+                                    <th className="p-4">Puesto</th>
+                                    <th className="p-4">Año 1ª Igualá</th>
+                                    <th className="p-4 text-right">Acciones</th>
+                                </tr>
+                            </thead>
+                            <tbody className="divide-y divide-slate-100">
+                                {store.currentAspirantes.length === 0 ? (
+                                    <tr>
+                                        <td colSpan="5" className="p-8 text-center text-gray-400">
+                                            No hay aspirantes registrados en este paso.
+                                        </td>
+                                    </tr>
+                                ) : store.currentAspirantes.map(member => (
+                                    <tr key={member.id} className="hover:bg-slate-50 transition-colors">
+                                        <td className="p-4">
+                                            <div className="font-bold text-slate-800">{member.name}</div>
+                                            {member.nickname && <div className="text-xs text-cofrade-purple font-medium">"{member.nickname}"</div>}
+                                            <div className="text-xs text-gray-400 uppercase mt-0.5">{member.dni}</div>
+                                        </td>
+                                        <td className="p-4 hidden md:table-cell">
+                                            <div className="text-sm text-slate-600 flex items-center gap-1">
+                                                <Icon name="phone" size={12} /> {member.phone}
+                                            </div>
+                                            {member.address && (
+                                                <div className="text-xs text-slate-400 mt-1 flex items-center gap-1">
+                                                    <Icon name="map-pin" size={12} /> {member.address}
+                                                </div>
+                                            )}
+                                        </td>
+                                        <td className="p-4 text-slate-600 font-medium">{member.height} cm</td>
+                                        <td className="p-4 font-bold text-slate-700 text-center">
+                                            {member.trabajadera || '-'}
+                                        </td>
+                                        <td className="p-4">
+                                            <span className="bg-purple-50 text-cofrade-purple px-2 py-1 rounded-md text-xs font-semibold uppercase tracking-wide w-fit">
+                                                {member.position}
+                                            </span>
+                                        </td>
+                                        <td className="p-4 text-slate-600 font-medium">
+                                            {member.startYear || '-'}
+                                        </td>
+                                        <td className="p-4 text-right flex justify-end gap-2">
+                                            <button onClick={() => store.promoteAspirante(member)} className="text-green-600 hover:text-green-800 flex items-center gap-1 text-sm font-medium mr-2 bg-green-50 px-2 py-1 rounded border border-green-200" title="Ascender a Titular">
+                                                <Icon name="arrow-up-circle" size={16} /> <span className="hidden sm:inline">Ascender</span>
+                                            </button>
+                                            <button onClick={() => openEdit(member)} className="text-blue-500 hover:text-blue-700">
+                                                <Icon name="pencil" size={18} />
+                                            </button>
+                                            <button onClick={() => { if (confirm('¿Borrar aspirante?')) store.deleteMember(member.id) }} className="text-red-400 hover:text-red-600">
+                                                <Icon name="trash-2" size={18} />
+                                            </button>
+                                        </td>
+                                    </tr>
+                                ))}
+                            </tbody>
+                        </table>
+                    </div>
+
+                    <Modal isOpen={isModalOpen} onClose={closeModal} title={editingId ? "Editar Aspirante" : "Nuevo Aspirante"}>
+                        <form onSubmit={handleSubmit} className="space-y-4">
+                            <div className="grid grid-cols-3 gap-4">
+                                <div className="col-span-1">
+                                    <label className="block text-sm font-medium text-gray-700 mb-1">DNI</label>
+                                    <input required type="text" className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-cofrade-purple focus:border-transparent outline-none uppercase"
+                                        value={formData.dni} onChange={e => setFormData({ ...formData, dni: e.target.value })} placeholder="12345678A" />
+                                </div>
+                                <div className="col-span-2">
+                                    <label className="block text-sm font-medium text-gray-700 mb-1">Nombre Completo</label>
+                                    <input required type="text" className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-cofrade-purple focus:border-transparent outline-none"
+                                        value={formData.name} onChange={e => setFormData({ ...formData, name: e.target.value })} placeholder="Ej: Juan Pérez" />
+                                </div>
+                            </div>
+
+                            <div className="grid grid-cols-2 gap-4">
+                                <div>
+                                    <label className="block text-sm font-medium text-gray-700 mb-1">Apodo / Mote</label>
+                                    <input type="text" className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-cofrade-purple focus:border-transparent outline-none"
+                                        value={formData.nickname} onChange={e => setFormData({ ...formData, nickname: e.target.value })} placeholder='Ej: "El Largo"' />
+                                </div>
+                                <div>
+                                    <label className="block text-sm font-medium text-gray-700 mb-1">Teléfono</label>
+                                    <input type="tel" className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-cofrade-purple focus:border-transparent outline-none"
+                                        value={formData.phone} onChange={e => setFormData({ ...formData, phone: e.target.value })} placeholder="600000000" />
+                                </div>
+                            </div>
+
+                            <div>
+                                <label className="block text-sm font-medium text-gray-700 mb-1">Dirección</label>
+                                <input type="text" className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-cofrade-purple focus:border-transparent outline-none"
+                                    value={formData.address} onChange={e => setFormData({ ...formData, address: e.target.value })} placeholder="C/ Gran Poder, 2" />
+                            </div>
+
+                            <div className="grid grid-cols-3 gap-4">
+                                <div className="col-span-1">
+                                    <label className="block text-sm font-medium text-gray-700 mb-1">Altura (cm)</label>
+                                    <input required type="number" className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-cofrade-purple focus:border-transparent outline-none"
+                                        value={formData.height} onChange={e => setFormData({ ...formData, height: e.target.value })} placeholder="175" />
+                                </div>
+                                <div className="col-span-1">
+                                    <label className="block text-sm font-medium text-gray-700 mb-1">Trabajadera</label>
+                                    <input type="number" className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-cofrade-purple focus:border-transparent outline-none"
+                                        value={formData.trabajadera || ''} onChange={e => setFormData({ ...formData, trabajadera: e.target.value })} placeholder="-" />
+                                </div>
+                                <div className="col-span-1">
+                                    <label className="block text-sm font-medium text-gray-700 mb-1">1ª Igualá (Año)</label>
+                                    <input type="number" min="1900" max="2100" className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-cofrade-purple focus:border-transparent outline-none"
+                                        value={formData.startYear} onChange={e => setFormData({ ...formData, startYear: e.target.value })} placeholder="2024" />
+                                </div>
+                                <div className="col-span-1">
+                                    <label className="block text-sm font-medium text-gray-700 mb-1">Puesto</label>
+                                    <select className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-cofrade-purple focus:border-transparent outline-none bg-white"
+                                        value={formData.position} onChange={e => setFormData({ ...formData, position: e.target.value })}>
+                                        <option value="Patero">Patero</option>
+                                        <option value="Fijador">Fijador</option>
+                                        <option value="Costero">Costero</option>
+                                        <option value="Corriente">Corriente</option>
+                                    </select>
+                                </div>
+                            </div>
+                            <div className="pt-4 flex justify-end gap-2">
+                                <Button type="button" variant="ghost" onClick={closeModal}>Cancelar</Button>
+                                <Button type="submit">{editingId ? 'Guardar Cambios' : 'Registrar'}</Button>
+                            </div>
+                        </form>
+                    </Modal>
+                </div>
+            )
+        }
+
+        // --- Layout ---
+
+        const SidebarItem = ({ icon, label, active, onClick }) => (
+            <button
+                onClick={onClick}
+                className={`w-full flex items-center gap-3 px-4 py-3 rounded-lg transition-all font-medium mb-1
+                    ${active
+                        ? 'bg-cofrade-purple text-white shadow-md'
+                        : 'text-slate-400 hover:bg-slate-800 hover:text-white'}`}
+            >
+                <Icon name={icon} size={20} />
+                {label}
+            </button>
+        );
+
+        const PasoSelector = ({ store }) => {
+            const [isCreating, setIsCreating] = useState(false);
+            const [isEditing, setIsEditing] = useState(false);
+            const [newName, setNewName] = useState('');
+            const [newType, setNewType] = useState('Cristo');
+            const [editName, setEditName] = useState('');
+
+            const handleCreate = (e) => {
+                e.preventDefault();
+                store.createPaso(newName, newType);
+                setNewName('');
+                setIsCreating(false);
+            };
+
+            const startEdit = () => {
+                setEditName(store.currentPaso.name);
+                setIsEditing(true);
+            };
+
+            const handleUpdate = (e) => {
+                e.preventDefault();
+                if (editName.trim()) {
+                    store.updatePaso(store.currentPasoId, editName);
+                    setIsEditing(false);
+                }
+            };
+
+            return (
+                <div className="px-4 mb-6">
+                    <div className="flex justify-between items-center px-2 mb-2">
+                        <p className="text-xs font-bold text-slate-500 uppercase tracking-wider">Paso Activo</p>
+                        {!isEditing && !isCreating && (
+                            <button onClick={startEdit} className="text-slate-500 hover:text-white transition-colors" title="Editar nombre">
+                                <Icon name="pencil" size={12} />
+                            </button>
+                        )}
+                    </div>
+
+                    {isEditing ? (
+                        <form onSubmit={handleUpdate} className="flex gap-2">
+                            <input
+                                autoFocus
+                                className="w-full bg-slate-800 text-white rounded-lg px-3 py-2 outline-none border border-cofrade-purple focus:ring-1 focus:ring-cofrade-purple font-medium"
+                                value={editName}
+                                onChange={e => setEditName(e.target.value)}
+                            />
+                            <button type="submit" className="text-green-400 hover:text-green-300"><Icon name="check" size={18} /></button>
+                            <button type="button" onClick={() => setIsEditing(false)} className="text-red-400 hover:text-red-300"><Icon name="x" size={18} /></button>
+                        </form>
+                    ) : (
+                        <div className="relative">
+                            <select
+                                className="w-full bg-slate-800 text-white rounded-lg px-3 py-2 appearance-none cursor-pointer focus:ring-2 focus:ring-cofrade-gold outline-none border border-slate-700 font-medium"
+                                value={store.currentPasoId}
+                                onChange={(e) => {
+                                    if (e.target.value === 'NEW') setIsCreating(true);
+                                    else store.setCurrentPasoId(e.target.value);
+                                }}
+                            >
+                                {store.pasos.map(p => (
+                                    <option key={p.id} value={p.id}>{p.name}</option>
+                                ))}
+                                <option value="NEW">+ Nuevo Paso...</option>
+                            </select>
+                            <div className="absolute right-3 top-3 pointer-events-none text-slate-400">
+                                <Icon name="chevron-down" size={16} />
+                            </div>
+                        </div>
+                    )}
+
+                    {isCreating && (
+                        <div className="mt-3 p-3 bg-slate-800 rounded-lg border border-slate-700 animate-in fade-in slide-in-from-top-2">
+                            <form onSubmit={handleCreate} className="space-y-2">
+                                <input autoFocus required placeholder="Nombre (ej. Palio)" className="w-full bg-slate-900 border border-slate-700 rounded px-2 py-1 text-sm text-white"
+                                    value={newName} onChange={e => setNewName(e.target.value)} />
+                                <select className="w-full bg-slate-900 border border-slate-700 rounded px-2 py-1 text-sm text-white"
+                                    value={newType} onChange={e => setNewType(e.target.value)}>
+                                    <option value="Cristo">Cristo</option>
+                                    <option value="Palio">Palio</option>
+                                    <option value="Misterio">Misterio</option>
+                                    <option value="Gloria">Gloria</option>
+                                </select>
+                                <div className="flex gap-2 pt-1">
+                                    <button type="button" onClick={() => setIsCreating(false)} className="flex-1 py-1 text-xs text-slate-400 hover:text-white">Cancelar</button>
+                                    <button type="submit" className="flex-1 py-1 text-xs bg-cofrade-purple text-white rounded hover:bg-purple-600">Crear</button>
+                                </div>
+                            </form>
+                        </div>
+                    )}
+                </div>
+            );
+        };
+
+        const App = () => {
+            const [view, setView] = useState('dashboard');
+            const store = useCostaleroStore();
+
+            useEffect(() => {
+                lucide.createIcons();
+            });
+
+            return (
+                <div className="flex h-screen font-sans relative overflow-hidden">
+                    {/* Background Image */}
+                    {store.currentBgImage ? (
+                        <div className="absolute inset-0 z-0 pointer-events-none" style={{
+                            backgroundImage: `url(${store.currentBgImage})`,
+                            backgroundSize: 'cover',
+                            backgroundPosition: 'center',
+                            filter: 'blur(10px)',
+                            transform: 'scale(1.1)'
+                        }}></div>
+                    ) : (
+                        <div className="absolute inset-0 z-0 bg-slate-50"></div>
+                    )}
+
+                    {/* Sidebar */}
+                    <aside className="w-64 bg-cofrade-dark text-white flex flex-col shadow-2xl z-10 shrink-0">
+                        <div className="p-6 border-b border-slate-700 flex items-center gap-3 mb-2">
+                            <div className="bg-cofrade-gold p-2 rounded-lg text-cofrade-dark">
+                                <Icon name="crown" size={24} />
+                            </div>
+                            <div>
+                                <h1 className="font-bold text-lg tracking-tight">Equipo Capataces</h1>
+                                <p className="text-xs text-slate-400">Online Mode</p>
+                            </div>
+                        </div>
+
+                        <PasoSelector store={store} />
+
+                        <nav className="flex-1 px-4 overflow-y-auto">
+                            <SidebarItem icon="layout-dashboard" label="Panel" active={view === 'dashboard'} onClick={() => setView('dashboard')} />
+                            <SidebarItem icon="users" label="Cuadrilla" active={view === 'members'} onClick={() => setView('members')} />
+                            <SidebarItem icon="user-plus" label="Aspirantes" active={view === 'aspirantes'} onClick={() => setView('aspirantes')} />
+                            <SidebarItem icon="layout-grid" label="La Igualá" active={view === 'iguala'} onClick={() => setView('iguala')} />
+                            <SidebarItem icon="calendar" label="Eventos" active={view === 'events'} onClick={() => setView('events')} />
+                            <div className="my-4 border-t border-slate-700"></div>
+                            <SidebarItem icon="settings" label="Configuración" active={view === 'settings'} onClick={() => setView('settings')} />
+                        </nav>
+
+                        <div className="p-4 border-t border-slate-700">
+                            <div className="flex items-center gap-3 px-4 py-2 opacity-60 hover:opacity-100 transition-opacity cursor-pointer"
+                                onClick={() => store.deletePaso(store.currentPasoId)}>
+                                <Icon name="trash-2" size={16} />
+                                <span className="text-xs">Borrar Paso Actual</span>
+                            </div>
+                        </div>
+                    </aside>
+
+                    {/* Main Content */}
+                    <main className="flex-1 overflow-y-auto z-10 relative bg-slate-50/50">
+                        <div className="p-4 md:p-8 max-w-7xl mx-auto h-full">
+                            {view === 'dashboard' && <Dashboard store={store} setView={setView} />}
+                            {view === 'members' && <MembersView store={store} />}
+                            {view === 'aspirantes' && <AspirantesView store={store} />}
+                            {view === 'iguala' && <IgualaView store={store} />}
+                            {view === 'events' && <EventsView store={store} />}
+                            {view === 'settings' && <SettingsView store={store} />}
+                        </div>
+                    </main>
+                </div>
+            );
+        };
+
+        const root = ReactDOM.createRoot(document.getElementById('root'));
+        root.render(<App />);
+    </script>
+</body>
+
+</html>
