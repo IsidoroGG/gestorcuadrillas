@@ -19,8 +19,7 @@
     <!-- Lucide Icons (Global) -->
     <script src="https://unpkg.com/lucide@latest"></script>
 
-    <!-- Supabase JS -->
-    <script src="https://unpkg.com/@supabase/supabase-js@2"></script>
+    <!-- Custom Backend API (via fetch) -->
 
     <!-- jsPDF & AutoTable -->
     <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js"></script>
@@ -77,7 +76,6 @@
 
     <script type="text/babel">
         const { useState, useEffect, useMemo, useRef } = React;
-        const { createClient } = supabase;
 
         // --- Utils & Components ---
 
@@ -155,11 +153,10 @@
 
         const useCostaleroStore = () => {
             // -- Credentials --
-            const [supabaseCreds, setSupabaseCreds] = useState(() => {
-                const saved = localStorage.getItem('cofrade_sb_creds');
-                return saved ? JSON.parse(saved) : { url: '', key: '' };
+            // -- Backend Configuration --
+            const [backendUrl, setBackendUrl] = useState(() => {
+                return localStorage.getItem('cofrade_backend_url') || 'http://localhost:3000';
             });
-            const [supabaseClient, setSupabaseClient] = useState(null);
             const [isOnline, setIsOnline] = useState(false);
             const [syncStatus, setSyncStatus] = useState('idle'); // idle, syncing, success, error
 
@@ -207,23 +204,16 @@
 
             // -- Initialization --
 
+            // -- Initialization --
+
             useEffect(() => {
-                if (supabaseCreds.url && supabaseCreds.key) {
-                    try {
-                        const client = createClient(supabaseCreds.url, supabaseCreds.key);
-                        setSupabaseClient(client);
-                        setIsOnline(true);
-                        // Initial Fetch
-                        fetchFromSupabase(client);
-                    } catch (e) {
-                        console.error("Supabase init error", e);
-                        setIsOnline(false);
-                    }
+                if (backendUrl) {
+                    setIsOnline(true); // Optimistic online status, validated by fetch
+                    fetchFromBackend();
                 } else {
-                    setSupabaseClient(null);
                     setIsOnline(false);
                 }
-            }, [supabaseCreds]);
+            }, [backendUrl]);
 
             // -- Persistence (Local) --
             useEffect(() => localStorage.setItem('cofrade_pasos', JSON.stringify(pasos)), [pasos]);
@@ -231,34 +221,34 @@
             useEffect(() => localStorage.setItem('cofrade_members', JSON.stringify(members)), [members]);
             useEffect(() => localStorage.setItem('cofrade_iguala_multi', JSON.stringify(igualaData)), [igualaData]);
             useEffect(() => localStorage.setItem('cofrade_events', JSON.stringify(events)), [events]);
-            useEffect(() => localStorage.setItem('cofrade_sb_creds', JSON.stringify(supabaseCreds)), [supabaseCreds]);
+            useEffect(() => localStorage.setItem('cofrade_backend_url', backendUrl), [backendUrl]);
             useEffect(() => localStorage.setItem('cofrade_bg_images', JSON.stringify(backgroundImages)), [backgroundImages]);
 
 
             // -- Supabase Sync Functions --
 
-            const fetchFromSupabase = async (client) => {
-                if (!client) return;
+            // -- Backend Sync Functions --
+
+            const fetchFromBackend = async () => {
+                if (!backendUrl) return;
                 setSyncStatus('syncing');
                 try {
-                    // Fetch in parallel
                     const [resPasos, resMembers, resIguala, resEvents] = await Promise.all([
-                        client.from('pasos').select('*'),
-                        client.from('members').select('*'),
-                        client.from('iguala').select('*'),
-                        client.from('events').select('*')
+                        fetch(`${backendUrl}/api/pasos`).then(r => r.json()),
+                        fetch(`${backendUrl}/api/members`).then(r => r.json()),
+                        fetch(`${backendUrl}/api/iguala`).then(r => r.json()),
+                        fetch(`${backendUrl}/api/events`).then(r => r.json())
                     ]);
 
-                    if (resPasos.data && resPasos.data.length > 0) {
-                        setPasos(resPasos.data);
+                    if (resPasos && resPasos.length > 0) {
+                        setPasos(resPasos);
                         // If current ID doesn't exist in remote, reset to first
-                        if (!resPasos.data.find(p => p.id === currentPasoId)) {
-                            setCurrentPasoId(resPasos.data[0].id);
+                        if (!resPasos.find(p => p.id === currentPasoId)) {
+                            setCurrentPasoId(resPasos[0].id);
                         }
                     }
-                    if (resMembers.data) {
-                        // Map snake_case to camelCase
-                        const mappedMembers = resMembers.data.map(m => ({
+                    if (resMembers) {
+                        const mappedMembers = resMembers.map(m => ({
                             id: m.id,
                             pasoId: m.paso_id,
                             dni: m.dni,
@@ -268,14 +258,15 @@
                             height: m.height,
                             phone: m.phone,
                             position: m.position,
-                            status: m.status || 'titular',  // Default to titular
-                            startYear: m.start_year
+                            status: m.status || 'titular',
+                            startYear: m.start_year,
+                            trabajadera: m.trabajadera
                         }));
                         setMembers(mappedMembers);
                     }
-                    if (resIguala.data) {
+                    if (resIguala) {
                         const newIguala = {};
-                        resIguala.data.forEach(row => {
+                        resIguala.forEach(row => {
                             newIguala[row.paso_id] = {
                                 ...row.config, // { rows: X, count: Y }
                                 assignments: row.assignments // { "1-1": "id" }
@@ -283,8 +274,8 @@
                         });
                         setIgualaData(prev => ({ ...prev, ...newIguala }));
                     }
-                    if (resEvents.data) {
-                        const mappedEvents = resEvents.data.map(e => ({
+                    if (resEvents) {
+                        const mappedEvents = resEvents.map(e => ({
                             id: e.id,
                             pasoId: e.paso_id,
                             title: e.title,
@@ -301,12 +292,11 @@
             };
 
             const toggleOnline = (url, key) => {
-                if (!url || !key) {
-                    if (confirm("¿Desconectar de la base de datos? Volverás al modo Offline.")) {
-                        setSupabaseCreds({ url: '', key: '' });
+                // Legacy support for clearing credentials
+                if (!url) {
+                    if (confirm("¿Desconectar del backend?")) {
+                        setBackendUrl('');
                     }
-                } else {
-                    setSupabaseCreds({ url, key });
                 }
             };
 
@@ -320,22 +310,38 @@
                 setIgualaData(prev => ({ ...prev, [newId]: { rows: 8, count: 6, assignments: {} } }));
                 setCurrentPasoId(newId);
 
-                if (supabaseClient) {
-                    await supabaseClient.from('pasos').insert([{ id: newId, name, type }]);
-                    // Initialize empty iguala entry
-                    await supabaseClient.from('iguala').insert([{
-                        paso_id: newId,
-                        config: { rows: 8, count: 6 },
-                        assignments: {}
-                    }]);
+                if (isOnline) {
+                    try {
+                        await fetch(`${backendUrl}/api/pasos`, {
+                            method: 'POST',
+                            headers: { 'Content-Type': 'application/json' },
+                            body: JSON.stringify({ id: newId, name, type })
+                        });
+                        await fetch(`${backendUrl}/api/iguala`, {
+                            method: 'POST',
+                            headers: { 'Content-Type': 'application/json' },
+                            body: JSON.stringify({
+                                paso_id: newId,
+                                config: { rows: 8, count: 6 },
+                                assignments: {}
+                            })
+                        });
+                    } catch (e) {
+                        console.error('API Error', e);
+                        setSyncStatus('error');
+                    }
                 }
             };
 
             const updatePaso = async (id, newName) => {
                 setPasos(pasos.map(p => p.id === id ? { ...p, name: newName } : p));
 
-                if (supabaseClient) {
-                    await supabaseClient.from('pasos').update({ name: newName }).eq('id', id);
+                if (isOnline) {
+                    await fetch(`${backendUrl}/api/pasos/${id}`, {
+                        method: 'PUT',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({ name: newName })
+                    });
                 }
             };
 
@@ -353,12 +359,10 @@
 
                 if (currentPasoId === id) setCurrentPasoId(pasos.find(p => p.id !== id).id);
 
-                if (supabaseClient) {
-                    await supabaseClient.from('pasos').delete().eq('id', id);
-                    // Cascade should handle members/iguala/events but we rely on defined schema cascade or manually delete
-                    await supabaseClient.from('members').delete().eq('paso_id', id);
-                    await supabaseClient.from('iguala').delete().eq('paso_id', id);
-                    await supabaseClient.from('events').delete().eq('paso_id', id);
+                if (isOnline) {
+                    await fetch(`${backendUrl}/api/pasos/${id}`, { method: 'DELETE' });
+                    // Cascading delete handled by DB or backend logic if needed, 
+                    // but for now relying on backend to clean up or DB foreign keys (on delete cascade)
                 }
             };
 
@@ -368,40 +372,48 @@
                 const fullMember = { ...member, id: newId, pasoId: currentPasoId, status };
                 setMembers([...members, fullMember]);
 
-                if (supabaseClient) {
-                    await supabaseClient.from('members').insert([{
-                        id: newId,
-                        paso_id: currentPasoId,
-                        dni: member.dni,
-                        name: member.name,
-                        nickname: member.nickname,
-                        address: member.address,
-                        height: member.height,
-                        phone: member.phone,
-                        position: member.position,
-                        status: status,
-                        start_year: member.startYear,
-                        trabajadera: member.trabajadera
-                    }]);
+                if (isOnline) {
+                    await fetch(`${backendUrl}/api/members`, {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({
+                            id: newId,
+                            paso_id: currentPasoId,
+                            dni: member.dni,
+                            name: member.name,
+                            nickname: member.nickname,
+                            address: member.address,
+                            height: member.height,
+                            phone: member.phone,
+                            position: member.position,
+                            status: status,
+                            start_year: member.startYear,
+                            trabajadera: member.trabajadera
+                        })
+                    });
                 }
             };
 
             const updateMember = async (id, updated) => {
                 setMembers(members.map(m => m.id === id ? { ...m, ...updated } : m));
 
-                if (supabaseClient) {
-                    await supabaseClient.from('members').update({
-                        dni: updated.dni,
-                        name: updated.name,
-                        nickname: updated.nickname,
-                        address: updated.address,
-                        height: updated.height,
-                        phone: updated.phone,
-                        position: updated.position,
-                        status: updated.status,
-                        start_year: updated.startYear,
-                        trabajadera: updated.trabajadera
-                    }).eq('id', id);
+                if (isOnline) {
+                    await fetch(`${backendUrl}/api/members/${id}`, {
+                        method: 'PUT',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({
+                            dni: updated.dni,
+                            name: updated.name,
+                            nickname: updated.nickname,
+                            address: updated.address,
+                            height: updated.height,
+                            phone: updated.phone,
+                            position: updated.position,
+                            status: updated.status,
+                            start_year: updated.startYear,
+                            trabajadera: updated.trabajadera
+                        })
+                    });
                 }
             };
 
@@ -418,13 +430,17 @@
                 newIguala[currentPasoId] = pasoIguala;
                 setIgualaData(newIguala);
 
-                if (supabaseClient) {
-                    await supabaseClient.from('members').delete().eq('id', id);
-                    // Update Iguala blob
-                    await supabaseClient.from('iguala').upsert({
-                        paso_id: currentPasoId,
-                        config: { rows: pasoIguala.rows, count: pasoIguala.count },
-                        assignments: pasoIguala.assignments
+                if (isOnline) {
+                    await fetch(`${backendUrl}/api/members/${id}`, { method: 'DELETE' });
+                    // Also need to push updated Iguala to clear assignment remotely
+                    await fetch(`${backendUrl}/api/iguala`, {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({
+                            paso_id: currentPasoId,
+                            config: { rows: pasoIguala.rows, count: pasoIguala.count },
+                            assignments: pasoIguala.assignments
+                        })
                     });
                 }
             };
@@ -441,11 +457,15 @@
                     [currentPasoId]: newDataObj
                 }));
 
-                if (supabaseClient) {
-                    await supabaseClient.from('iguala').upsert({
-                        paso_id: currentPasoId,
-                        config: { rows: newDataObj.rows, count: newDataObj.count },
-                        assignments: newDataObj.assignments
+                if (isOnline) {
+                    await fetch(`${backendUrl}/api/iguala`, {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({
+                            paso_id: currentPasoId,
+                            config: { rows: newDataObj.rows, count: newDataObj.count },
+                            assignments: newDataObj.assignments
+                        })
                     });
                 }
             }
@@ -477,14 +497,18 @@
                 const newEvent = { ...event, id: newId };
                 setEvents([...events, newEvent]);
 
-                if (supabaseClient) {
-                    await supabaseClient.from('events').insert([{
-                        id: newId,
-                        paso_id: event.pasoId,
-                        title: event.title,
-                        date: event.date,
-                        type: event.type
-                    }]);
+                if (isOnline) {
+                    await fetch(`${backendUrl}/api/events`, {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({
+                            id: newId,
+                            paso_id: event.pasoId,
+                            title: event.title,
+                            date: event.date,
+                            type: event.type
+                        })
+                    });
                 }
             };
 
@@ -507,7 +531,9 @@
                 setIgualaConfig, assignSpot, unassignSpot,
                 events, createEvent,
                 // Persistence
-                isOnline, toggleOnline, syncStatus, setSyncStatus, supabaseCreds,
+                events, createEvent,
+                // Persistence
+                isOnline, syncStatus, setSyncStatus, backendUrl, setBackendUrl,
                 backgroundImages, setPasoImage, currentBgImage: backgroundImages[currentPasoId]
             };
         };
@@ -515,13 +541,7 @@
         // --- Views ---
 
         const SettingsView = ({ store }) => {
-            const [url, setUrl] = useState(store.supabaseCreds.url || '');
-            const [key, setKey] = useState(store.supabaseCreds.key || '');
-
-            const handleConnect = (e) => {
-                e.preventDefault();
-                store.toggleOnline(url, key);
-            };
+            const [url, setUrl] = useState(store.backendUrl || '');
 
             const exportData = () => {
                 const data = {
@@ -572,39 +592,25 @@
 
                     <Card>
                         <h3 className="text-xl font-bold mb-4 flex items-center gap-2">
-                            <Icon name="database" className="text-cofrade-purple" /> Conexión Online (Supabase)
+                            <Icon name="database" className="text-cofrade-purple" /> Conexión Backend (Node.js)
                         </h3>
-                        {store.isOnline ? (
-                            <div className="bg-green-50 border border-green-200 text-green-800 p-4 rounded-lg flex justify-between items-center">
-                                <div className="flex items-center gap-3">
-                                    <div className="w-3 h-3 bg-green-500 rounded-full animate-pulse"></div>
-                                    <span className="font-semibold">Conectado a la Nube</span>
-                                </div>
-                                <Button variant="danger" onClick={() => store.toggleOnline('', '')}>Desconectar</Button>
+                        <form onSubmit={(e) => { e.preventDefault(); store.setBackendUrl(url); }} className="space-y-4">
+                            <p className="text-sm text-gray-500 mb-4">
+                                Configura la URL del servidor backend (Railway o Localhost).
+                            </p>
+                            <div className="flex gap-2">
+                                <input required type="url" className="flex-1 px-3 py-2 border border-blue-200 rounded-lg bg-blue-50 focus:bg-white transition-colors"
+                                    placeholder="https://my-app.up.railway.app"
+                                    value={url} onChange={e => setUrl(e.target.value)} />
+                                <Button type="submit">Guardar</Button>
                             </div>
-                        ) : (
-                            <form onSubmit={handleConnect} className="space-y-4">
-                                <p className="text-sm text-gray-500 mb-4">
-                                    Introduce tus credenciales de Supabase para activar la sincronización en la nube.
-                                    Si no tienes, la app funcionará en modo Local.
-                                </p>
-                                <div>
-                                    <label className="block text-sm font-medium text-gray-700 mb-1">Supabase Project URL</label>
-                                    <input required type="url" className="w-full px-3 py-2 border border-blue-200 rounded-lg bg-blue-50 focus:bg-white transition-colors"
-                                        placeholder="https://xyz.supabase.co"
-                                        value={url} onChange={e => setUrl(e.target.value)} />
+                            {store.isOnline && (
+                                <div className="bg-green-50 border border-green-200 text-green-800 p-2 rounded-lg flex items-center gap-2 text-sm mt-2">
+                                    <div className="w-2 h-2 bg-green-500 rounded-full animate-pulse"></div>
+                                    Conectado: {store.backendUrl}
                                 </div>
-                                <div>
-                                    <label className="block text-sm font-medium text-gray-700 mb-1">Supabase API Key (Anon/Public)</label>
-                                    <input required type="password" className="w-full px-3 py-2 border border-blue-200 rounded-lg bg-blue-50 focus:bg-white transition-colors"
-                                        placeholder="eyJxh..."
-                                        value={key} onChange={e => setKey(e.target.value)} />
-                                </div>
-                                <div className="pt-2">
-                                    <Button type="submit" className="w-full">Conectar DB</Button>
-                                </div>
-                            </form>
-                        )}
+                            )}
+                        </form>
                     </Card>
 
                     <Card>
