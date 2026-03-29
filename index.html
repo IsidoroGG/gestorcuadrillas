@@ -260,22 +260,12 @@
 
             // -- Initialization --
 
-            useEffect(() => {
-                if (backendUrl) {
-                    setIsOnline(true); // Optimistic online status, validated by fetch
-                    fetchFromBackend();
-                } else {
-                    setIsOnline(false);
-                }
-            }, [backendUrl]);
-
             // -- Persistence (Local) --
             useEffect(() => localStorage.setItem('cofrade_pasos', JSON.stringify(pasos)), [pasos]);
             useEffect(() => localStorage.setItem('cofrade_current_paso', currentPasoId), [currentPasoId]);
             useEffect(() => localStorage.setItem('cofrade_members', JSON.stringify(members)), [members]);
             useEffect(() => localStorage.setItem('cofrade_iguala_multi', JSON.stringify(igualaData)), [igualaData]);
             useEffect(() => localStorage.setItem('cofrade_events', JSON.stringify(events)), [events]);
-            useEffect(() => localStorage.setItem('cofrade_backend_url', backendUrl), [backendUrl]);
             useEffect(() => localStorage.setItem('cofrade_bg_images', JSON.stringify(backgroundImages)), [backgroundImages]);
 
 
