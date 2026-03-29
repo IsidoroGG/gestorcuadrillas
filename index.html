@@ -343,6 +343,74 @@
                 } catch (error) {
                     console.error("Fetch error", error);
                     setSyncStatus('error');
+                    throw error;
+                }
+            };
+
+            const pushAllToBackend = async () => {
+                if (!supabaseClient) return alert("No hay conexión con Supabase configurada.");
+                setSyncStatus('syncing');
+                try {
+                    if (pasos.length > 0) {
+                        const { error } = await supabaseClient.from('pasos').upsert(
+                            pasos.map(p => ({ id: p.id, name: p.name, type: p.type, bg_image: backgroundImages[p.id] || null }))
+                        );
+                        if (error) throw error;
+                    }
+                    if (members.length > 0) {
+                        const { error } = await supabaseClient.from('members').upsert(
+                            members.map(m => ({
+                                id: m.id,
+                                paso_id: m.pasoId,
+                                dni: m.dni,
+                                name: m.name,
+                                nickname: m.nickname,
+                                address: m.address,
+                                height: m.height,
+                                phone: m.phone,
+                                position: m.position,
+                                status: m.status,
+                                start_year: m.startYear,
+                                trabajadera: m.trabajadera,
+                                cuadrilla_type: m.cuadrilla_type || 'alta'
+                            }))
+                        );
+                        if (error) throw error;
+                    }
+                    if (Object.keys(igualaData).length > 0) {
+                        const igualaUpsert = Object.entries(igualaData).map(([key, data]) => {
+                            const parts = key.split('_');
+                            const pId = parts[0];
+                            const cType = parts.length > 1 ? parts.slice(1).join('_') : 'alta';
+                            return {
+                                id: key,
+                                paso_id: pId,
+                                cuadrilla_type: cType,
+                                config: { rows: data.rows, count: data.count },
+                                assignments: data.assignments
+                            };
+                        });
+                        const { error } = await supabaseClient.from('iguala').upsert(igualaUpsert);
+                        if (error) throw error;
+                    }
+                    if (events.length > 0) {
+                        const { error } = await supabaseClient.from('events').upsert(
+                            events.map(e => ({
+                                id: e.id,
+                                paso_id: e.pasoId,
+                                title: e.title,
+                                date: e.date,
+                                type: e.type
+                            }))
+                        );
+                        if (error) throw error;
+                    }
+                    setSyncStatus('success');
+                    alert("¡Todos los datos locales se han subido a Supabase con éxito!");
+                } catch (error) {
+                    console.error("Push error", error);
+                    setSyncStatus('error');
+                    alert("Error al subir los datos a Supabase. Comprueba la consola.");
                 }
             };
 
@@ -627,7 +695,7 @@
                 // Persistence
                 events, createEvent,
                 // Persistence
-                isOnline, syncStatus, setSyncStatus, supabaseUrl, supabaseKey, setSupabaseConfig, supabaseClient, fetchFromBackend, // keeping fetchFromBackend signature for now to swap later
+                isOnline, syncStatus, setSyncStatus, supabaseUrl, supabaseKey, setSupabaseConfig, supabaseClient, fetchFromBackend, pushAllToBackend,
                 backgroundImages, setPasoImage, currentBgImage: backgroundImages[currentPasoId]
             };
         };
@@ -751,6 +819,37 @@
                                 <h4 className="font-bold">Importar Datos</h4>
                                 <p className="text-xs text-gray-500 mt-1">Restaura una copia de seguridad (JSON).</p>
                             </label>
+                        </div>
+                    </Card>
+
+                    <Card>
+                        <h3 className="text-xl font-bold mb-4 flex items-center gap-2">
+                            <Icon name="refresh-cw" className="text-cofrade-green" /> Sincronización Manual Supabase
+                        </h3>
+                        <p className="text-sm text-gray-500 mb-4">Usa estos botones si notas que los datos no se han actualizado automáticamente entre tus dispositivos.</p>
+                        <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                            <Button variant="outline" className="w-full flex-col h-auto py-4" onClick={async () => {
+                                if (!confirm("Esto sobrescribirá tus datos locales con los de Supabase. ¿Continuar?")) return;
+                                try {
+                                    await store.fetchFromBackend();
+                                    alert("Datos descargados correctamente desde Supabase.");
+                                } catch (e) {
+                                    alert("Hubo un error al descargar. Comprueba tu conexión y credenciales.");
+                                }
+                            }}>
+                                <Icon name="download-cloud" size={24} className="mb-2" />
+                                <span>Forzar Descarga</span>
+                                <span className="text-xs text-slate-500 mt-1 block font-normal">Sustituye lo local por la nube</span>
+                            </Button>
+                            
+                            <Button variant="outline" className="w-full flex-col h-auto py-4 text-cofrade-gold border-cofrade-gold hover:bg-yellow-50" onClick={async () => {
+                                if (!confirm("Esto sobrescribirá la nube de Supabase con los datos de este dispositivo. ¿Continuar?")) return;
+                                await store.pushAllToBackend();
+                            }}>
+                                <Icon name="upload-cloud" size={24} className="mb-2" />
+                                <span>Forzar Subida</span>
+                                <span className="text-xs text-yellow-700 mt-1 block font-normal opacity-80">Empuja lo local a la nube</span>
+                            </Button>
                         </div>
                     </Card>
 
