@@ -20,6 +20,7 @@
     <script src="https://unpkg.com/lucide@latest"></script>
 
     <!-- Custom Backend API (via fetch) -->
+    <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
 
     <!-- jsPDF & AutoTable -->
     <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js"></script>
@@ -67,6 +68,28 @@
 
         ::-webkit-scrollbar-thumb:hover {
             background: #a8a8a8;
+        }
+
+        /* Mobile Optimizations */
+        .pb-safe {
+            padding-bottom: env(safe-area-inset-bottom);
+        }
+
+        .h-dvh {
+            height: 100dvh;
+        }
+
+        body {
+            overscroll-behavior-y: none;
+        }
+
+        @media screen and (max-width: 768px) {
+
+            input,
+            select,
+            textarea {
+                font-size: 16px !important;
+            }
         }
     </style>
 </head>
@@ -133,15 +156,15 @@
         const Modal = ({ isOpen, onClose, title, children }) => {
             if (!isOpen) return null;
             return (
-                <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4 backdrop-blur-sm">
-                    <div className="bg-white rounded-2xl w-full max-w-md shadow-2xl animate-in fade-in zoom-in duration-200 max-h-[90vh] overflow-y-auto">
-                        <div className="flex justify-between items-center p-6 border-b border-gray-100 sticky top-0 bg-white z-10">
+                <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-0 md:p-4 backdrop-blur-sm">
+                    <div className="bg-white w-full h-full md:h-auto md:max-h-[90vh] md:w-full md:max-w-md md:rounded-2xl shadow-2xl overflow-hidden flex flex-col animate-in fade-in zoom-in duration-200">
+                        <div className="flex justify-between items-center p-4 md:p-6 border-b border-gray-100 shrink-0 bg-white z-10">
                             <h3 className="text-xl font-bold text-cofrade-dark">{title}</h3>
-                            <button onClick={onClose} className="text-gray-400 hover:text-gray-600">
+                            <button onClick={onClose} className="text-gray-400 hover:text-gray-600 p-2">
                                 <Icon name="x" size={24} />
                             </button>
                         </div>
-                        <div className="p-6">
+                        <div className="p-4 md:p-6 overflow-y-auto flex-1">
                             {children}
                         </div>
                     </div>
@@ -154,11 +177,41 @@
         const useCostaleroStore = () => {
             // -- Credentials --
             // -- Backend Configuration --
-            const [backendUrl, setBackendUrl] = useState(() => {
-                return localStorage.getItem('cofrade_backend_url') || 'http://localhost:3000';
+            const [supabaseUrl, setSupabaseUrl] = useState(() => {
+                return localStorage.getItem('cofrade_supabase_url') || '';
+            });
+            const [supabaseKey, setSupabaseKey] = useState(() => {
+                return localStorage.getItem('cofrade_supabase_key') || '';
             });
             const [isOnline, setIsOnline] = useState(false);
             const [syncStatus, setSyncStatus] = useState('idle'); // idle, syncing, success, error
+
+            const supabaseClient = useMemo(() => {
+                if (supabaseUrl && supabaseKey && window.supabase) {
+                    try {
+                        return window.supabase.createClient(supabaseUrl, supabaseKey);
+                    } catch (e) {
+                        return null;
+                    }
+                }
+                return null;
+            }, [supabaseUrl, supabaseKey]);
+
+            useEffect(() => {
+                setIsOnline(!!supabaseClient);
+            }, [supabaseClient]);
+
+            const setSupabaseConfig = (url, key) => {
+                setSupabaseUrl(url);
+                setSupabaseKey(key);
+                if (url && key) {
+                    localStorage.setItem('cofrade_supabase_url', url);
+                    localStorage.setItem('cofrade_supabase_key', key);
+                } else {
+                    localStorage.removeItem('cofrade_supabase_url');
+                    localStorage.removeItem('cofrade_supabase_key');
+                }
+            };
 
             // -- App State --
             const [pasos, setPasos] = useState(() => {
@@ -169,6 +222,7 @@
             const [currentPasoId, setCurrentPasoId] = useState(() => {
                 return localStorage.getItem('cofrade_current_paso') || 'default';
             });
+            const [currentCuadrilla, setCurrentCuadrilla] = useState('alta'); // 'alta' | 'baja'
 
             const [members, setMembers] = useState(() => {
                 const saved = localStorage.getItem('cofrade_members');
@@ -230,25 +284,24 @@
             // -- Backend Sync Functions --
 
             const fetchFromBackend = async () => {
-                if (!backendUrl) return;
+                if (!supabaseClient) return;
                 setSyncStatus('syncing');
                 try {
-                    // Update: PHP API uses ?table=param
                     const [resPasos, resMembers, resIguala, resEvents] = await Promise.all([
-                        fetch(`${backendUrl}/api/index.php?table=pasos`).then(r => r.json()),
-                        fetch(`${backendUrl}/api/index.php?table=members`).then(r => r.json()),
-                        fetch(`${backendUrl}/api/index.php?table=iguala`).then(r => r.json()),
-                        fetch(`${backendUrl}/api/index.php?table=events`).then(r => r.json())
+                        supabaseClient.from('pasos').select('*').then(r => r.data),
+                        supabaseClient.from('members').select('*').then(r => r.data),
+                        supabaseClient.from('iguala').select('*').then(r => r.data),
+                        supabaseClient.from('events').select('*').then(r => r.data)
                     ]);
 
-                    if (resPasos && resPasos.length > 0) {
+                    if (resPasos && Array.isArray(resPasos) && resPasos.length > 0) {
                         setPasos(resPasos);
                         // If current ID doesn't exist in remote, reset to first
                         if (!resPasos.find(p => p.id === currentPasoId)) {
                             setCurrentPasoId(resPasos[0].id);
                         }
                     }
-                    if (resMembers) {
+                    if (resMembers && Array.isArray(resMembers)) {
                         const mappedMembers = resMembers.map(m => ({
                             id: m.id,
                             pasoId: m.paso_id,
@@ -261,21 +314,23 @@
                             position: m.position,
                             status: m.status || 'titular',
                             startYear: m.start_year,
-                            trabajadera: m.trabajadera
+                            trabajadera: m.trabajadera,
+                            cuadrilla_type: m.cuadrilla_type || 'alta'
                         }));
                         setMembers(mappedMembers);
                     }
-                    if (resIguala) {
+                    if (resIguala && Array.isArray(resIguala)) {
                         const newIguala = {};
                         resIguala.forEach(row => {
-                            newIguala[row.paso_id] = {
+                            const key = row.cuadrilla_type ? `${row.paso_id}_${row.cuadrilla_type}` : row.paso_id;
+                            newIguala[key] = {
                                 ...row.config, // { rows: X, count: Y }
                                 assignments: row.assignments // { "1-1": "id" }
                             };
                         });
                         setIgualaData(prev => ({ ...prev, ...newIguala }));
                     }
-                    if (resEvents) {
+                    if (resEvents && Array.isArray(resEvents)) {
                         const mappedEvents = resEvents.map(e => ({
                             id: e.id,
                             pasoId: e.paso_id,
@@ -291,6 +346,7 @@
                     setSyncStatus('error');
                 }
             };
+
 
             const toggleOnline = (url, key) => {
                 // Legacy support for clearing credentials
@@ -308,25 +364,31 @@
                 const newPaso = { id: newId, name, type };
 
                 setPasos([...pasos, newPaso]);
-                setIgualaData(prev => ({ ...prev, [newId]: { rows: 8, count: 6, assignments: {} } }));
+                setPasos([...pasos, newPaso]);
+                setIgualaData(prev => ({
+                    ...prev,
+                    [`${newId}_alta`]: { rows: 8, count: 6, assignments: {} },
+                    [`${newId}_baja`]: { rows: 8, count: 6, assignments: {} }
+                }));
                 setCurrentPasoId(newId);
 
                 if (isOnline) {
                     try {
-                        await fetch(`${backendUrl}/api/index.php?table=pasos`, {
-                            method: 'POST',
-                            headers: { 'Content-Type': 'application/json' },
-                            body: JSON.stringify({ id: newId, name, type })
-                        });
-                        await fetch(`${backendUrl}/api/index.php?table=iguala`, {
-                            method: 'POST',
-                            headers: { 'Content-Type': 'application/json' },
-                            body: JSON.stringify({
+                        await supabaseClient.from('pasos').insert({ id: newId, name, type });
+                        await supabaseClient.from('iguala').insert([
+                            {
                                 paso_id: newId,
+                                cuadrilla_type: 'alta',
                                 config: { rows: 8, count: 6 },
                                 assignments: {}
-                            })
-                        });
+                            },
+                            {
+                                paso_id: newId,
+                                cuadrilla_type: 'baja',
+                                config: { rows: 8, count: 6 },
+                                assignments: {}
+                            }
+                        ]);
                     } catch (e) {
                         console.error('API Error', e);
                         setSyncStatus('error');
@@ -338,11 +400,7 @@
                 setPasos(pasos.map(p => p.id === id ? { ...p, name: newName } : p));
 
                 if (isOnline) {
-                    await fetch(`${backendUrl}/api/index.php?table=pasos&id=${id}`, {
-                        method: 'PUT',
-                        headers: { 'Content-Type': 'application/json' },
-                        body: JSON.stringify({ name: newName })
-                    });
+                    await supabaseClient.from('pasos').update({ name: newName }).eq('id', id);
                 }
             };
 
@@ -361,36 +419,33 @@
                 if (currentPasoId === id) setCurrentPasoId(pasos.find(p => p.id !== id).id);
 
                 if (isOnline) {
-                    await fetch(`${backendUrl}/api/index.php?table=pasos&id=${id}`, { method: 'DELETE' });
-                    // Cascading delete handled by DB or backend logic if needed, 
-                    // but for now relying on backend to clean up or DB foreign keys (on delete cascade)
+                    await supabaseClient.from('pasos').delete().eq('id', id);
+                    // Due to ON DELETE CASCADE on DB, or frontend optimistic removal
                 }
             };
 
             const addMember = async (member) => {
                 const newId = Date.now().toString();
                 const status = member.status || 'titular';
-                const fullMember = { ...member, id: newId, pasoId: currentPasoId, status };
+
+                const fullMember = { ...member, id: newId, pasoId: currentPasoId, status, cuadrilla_type: currentCuadrilla };
                 setMembers([...members, fullMember]);
 
                 if (isOnline) {
-                    await fetch(`${backendUrl}/api/index.php?table=members`, {
-                        method: 'POST',
-                        headers: { 'Content-Type': 'application/json' },
-                        body: JSON.stringify({
-                            id: newId,
-                            paso_id: currentPasoId,
-                            dni: member.dni,
-                            name: member.name,
-                            nickname: member.nickname,
-                            address: member.address,
-                            height: member.height,
-                            phone: member.phone,
-                            position: member.position,
-                            status: status,
-                            start_year: member.startYear,
-                            trabajadera: member.trabajadera
-                        })
+                    await supabaseClient.from('members').insert({
+                        id: newId,
+                        paso_id: currentPasoId,
+                        dni: member.dni,
+                        name: member.name,
+                        nickname: member.nickname,
+                        address: member.address,
+                        height: member.height,
+                        phone: member.phone,
+                        position: member.position,
+                        status: status,
+                        start_year: member.startYear,
+                        trabajadera: member.trabajadera,
+                        cuadrilla_type: currentCuadrilla
                     });
                 }
             };
@@ -399,21 +454,54 @@
                 setMembers(members.map(m => m.id === id ? { ...m, ...updated } : m));
 
                 if (isOnline) {
-                    await fetch(`${backendUrl}/api/index.php?table=members&id=${id}`, {
-                        method: 'PUT',
-                        headers: { 'Content-Type': 'application/json' },
-                        body: JSON.stringify({
-                            dni: updated.dni,
-                            name: updated.name,
-                            nickname: updated.nickname,
-                            address: updated.address,
-                            height: updated.height,
-                            phone: updated.phone,
-                            position: updated.position,
-                            status: updated.status,
-                            start_year: updated.startYear,
-                            trabajadera: updated.trabajadera
-                        })
+                    await supabaseClient.from('members').update({
+                        dni: updated.dni,
+                        name: updated.name,
+                        nickname: updated.nickname,
+                        address: updated.address,
+                        height: updated.height,
+                        phone: updated.phone,
+                        position: updated.position,
+                        status: updated.status,
+                        start_year: updated.startYear,
+                        trabajadera: updated.trabajadera,
+                        cuadrilla_type: updated.cuadrilla_type
+                    }).eq('id', id);
+                }
+            };
+
+            const copyMember = async (memberId, targetPasoId, targetCuadrilla) => {
+                const source = members.find(m => m.id === memberId);
+                if (!source) return;
+
+                const newId = Date.now().toString();
+                const newMember = {
+                    ...source,
+                    id: newId,
+                    pasoId: targetPasoId,
+                    cuadrilla_type: targetCuadrilla,
+                    position: '', // Reset position as it might be different
+                    trabajadera: 0 // Reset trabajadera
+                };
+
+                setMembers([...members, newMember]);
+                alert("Costalero copiado con éxito");
+
+                if (isOnline) {
+                    await supabaseClient.from('members').insert({
+                        id: newId,
+                        paso_id: targetPasoId,
+                        dni: newMember.dni,
+                        name: newMember.name,
+                        nickname: newMember.nickname,
+                        address: newMember.address,
+                        height: newMember.height,
+                        phone: newMember.phone,
+                        position: newMember.position,
+                        status: newMember.status,
+                        start_year: newMember.startYear,
+                        trabajadera: newMember.trabajadera,
+                        cuadrilla_type: targetCuadrilla
                     });
                 }
             };
@@ -432,17 +520,15 @@
                 setIgualaData(newIguala);
 
                 if (isOnline) {
-                    await fetch(`${backendUrl}/api/index.php?table=members&id=${id}`, { method: 'DELETE' });
+                    await supabaseClient.from('members').delete().eq('id', id);
                     // Also need to push updated Iguala to clear assignment remotely
-                    await fetch(`${backendUrl}/api/index.php?table=iguala`, {
-                        method: 'POST',
-                        headers: { 'Content-Type': 'application/json' },
-                        body: JSON.stringify({
-                            paso_id: currentPasoId,
-                            config: { rows: pasoIguala.rows, count: pasoIguala.count },
-                            assignments: pasoIguala.assignments
-                        })
-                    });
+                    await supabaseClient.from('iguala').upsert({
+                        id: `${currentPasoId}_${currentCuadrilla}`,
+                        paso_id: currentPasoId,
+                        cuadrilla_type: currentCuadrilla,
+                        config: { rows: pasoIguala.rows, count: pasoIguala.count },
+                        assignments: pasoIguala.assignments
+                    }, { onConflict: 'paso_id, cuadrilla_type' });
                 }
             };
 
@@ -455,29 +541,29 @@
             const updateIgualaData = async (newDataObj) => {
                 setIgualaData(prev => ({
                     ...prev,
-                    [currentPasoId]: newDataObj
+                    [`${currentPasoId}_${currentCuadrilla}`]: newDataObj
                 }));
 
                 if (isOnline) {
-                    await fetch(`${backendUrl}/api/index.php?table=iguala`, {
-                        method: 'POST',
-                        headers: { 'Content-Type': 'application/json' },
-                        body: JSON.stringify({
-                            paso_id: currentPasoId,
-                            config: { rows: newDataObj.rows, count: newDataObj.count },
-                            assignments: newDataObj.assignments
-                        })
-                    });
+                    await supabaseClient.from('iguala').upsert({
+                        id: `${currentPasoId}_${currentCuadrilla}`,
+                        paso_id: currentPasoId,
+                        cuadrilla_type: currentCuadrilla,
+                        config: { rows: newDataObj.rows, count: newDataObj.count },
+                        assignments: newDataObj.assignments
+                    }, { onConflict: 'paso_id, cuadrilla_type' });
                 }
-            }
+            };
 
             const setIgualaConfig = (config) => {
-                const updated = { ...igualaData[currentPasoId], ...config };
+                const currentKey = `${currentPasoId}_${currentCuadrilla}`;
+                const current = igualaData[currentKey] || { rows: 8, count: 6, assignments: {} };
+                const updated = { ...current, ...config };
                 updateIgualaData(updated);
             };
 
             const assignSpot = (rowIdx, spotIdx, memberId) => {
-                const current = igualaData[currentPasoId];
+                const current = igualaData[`${currentPasoId}_${currentCuadrilla}`] || { rows: 8, count: 6, assignments: {} };
                 const updated = {
                     ...current,
                     assignments: { ...current.assignments, [`${rowIdx}-${spotIdx}`]: memberId }
@@ -486,7 +572,7 @@
             };
 
             const unassignSpot = (rowIdx, spotIdx) => {
-                const current = igualaData[currentPasoId];
+                const current = igualaData[`${currentPasoId}_${currentCuadrilla}`] || { rows: 8, count: 6, assignments: {} };
                 const newAssign = { ...current.assignments };
                 delete newAssign[`${rowIdx}-${spotIdx}`];
                 const updated = { ...current, assignments: newAssign };
@@ -499,16 +585,12 @@
                 setEvents([...events, newEvent]);
 
                 if (isOnline) {
-                    await fetch(`${backendUrl}/api/index.php?table=events`, {
-                        method: 'POST',
-                        headers: { 'Content-Type': 'application/json' },
-                        body: JSON.stringify({
-                            id: newId,
-                            paso_id: event.pasoId,
-                            title: event.title,
-                            date: event.date,
-                            type: event.type
-                        })
+                    await supabaseClient.from('events').insert({
+                        id: newId,
+                        paso_id: event.pasoId,
+                        title: event.title,
+                        date: event.date,
+                        type: event.type
                     });
                 }
             };
@@ -522,19 +604,19 @@
                 });
             };
 
-            const currentMembers = useMemo(() => members.filter(m => m.pasoId === currentPasoId && (m.status === 'titular' || !m.status)), [members, currentPasoId]);
+            const currentMembers = useMemo(() => members.filter(m => m.pasoId === currentPasoId && (m.status === 'titular' || !m.status) && (m.cuadrilla_type === currentCuadrilla || !m.cuadrilla_type)), [members, currentPasoId, currentCuadrilla]);
             const currentAspirantes = useMemo(() => members.filter(m => m.pasoId === currentPasoId && m.status === 'aspirante'), [members, currentPasoId]);
 
             return {
-                pasos, currentPasoId, setCurrentPasoId, createPaso, deletePaso, updatePaso, currentPaso: pasos.find(p => p.id === currentPasoId) || pasos[0],
-                members, currentMembers, currentAspirantes, addMember, updateMember, deleteMember, promoteAspirante,
-                igualaData, currentIguala: igualaData[currentPasoId] || { rows: 8, count: 6, assignments: {} },
-                setIgualaConfig, assignSpot, unassignSpot,
+                pasos, currentPasoId, setCurrentPasoId, createPaso, deletePaso, updatePaso, currentPaso: pasos.find(p => p.id === currentPasoId) || pasos[0] || { id: 'dummy', name: 'Cargando...', type: '-' },
+                members, currentMembers, currentAspirantes, addMember, updateMember, deleteMember, promoteAspirante, copyMember,
+                igualaData, currentIguala: igualaData[`${currentPasoId}_${currentCuadrilla}`] || { rows: 8, count: 6, assignments: {} },
+                setIgualaConfig, assignSpot, unassignSpot, currentCuadrilla, setCurrentCuadrilla,
                 events, createEvent,
                 // Persistence
                 events, createEvent,
                 // Persistence
-                isOnline, syncStatus, setSyncStatus, backendUrl, setBackendUrl,
+                isOnline, syncStatus, setSyncStatus, supabaseUrl, supabaseKey, setSupabaseConfig, supabaseClient, fetchFromBackend, // keeping fetchFromBackend signature for now to swap later
                 backgroundImages, setPasoImage, currentBgImage: backgroundImages[currentPasoId]
             };
         };
@@ -542,7 +624,8 @@
         // --- Views ---
 
         const SettingsView = ({ store }) => {
-            const [url, setUrl] = useState(store.backendUrl || '');
+            const [supabaseUrl, setSupabaseUrl] = useState(store.supabaseUrl || '');
+            const [supabaseKey, setSupabaseKey] = useState(store.supabaseKey || '');
 
             const exportData = () => {
                 const data = {
@@ -568,17 +651,40 @@
                 const reader = new FileReader();
                 reader.onload = (e) => {
                     try {
+                        console.log("Iniciando importación...");
                         const data = JSON.parse(e.target.result);
-                        if (confirm("Esto sobrescribirá TODOS tus datos locales. ¿Estás seguro?")) {
+                        console.log("Datos leídos:", data);
+
+                        if (!data || !data.pasos || !data.members) {
+                            throw new Error("El archivo no tiene el formato correcto (faltan pasos o miembros).");
+                        }
+
+                        if (confirm(`Se han encontrado ${data.members.length} costaleros y ${data.pasos.length} pasos. ¿Sobrescribir datos locales?`)) {
+                            // 1. Clear backend URL to ensure OFFLINE mode
+                            localStorage.removeItem('cofrade_supabase_url');
+                            localStorage.removeItem('cofrade_supabase_key');
+                            store.setSupabaseConfig('', ''); // Update state immediately too
+
+                            // 2. Save data
                             localStorage.setItem('cofrade_pasos', JSON.stringify(data.pasos));
                             localStorage.setItem('cofrade_members', JSON.stringify(data.members));
-                            localStorage.setItem('cofrade_iguala_multi', JSON.stringify(data.iguala));
-                            localStorage.setItem('cofrade_events', JSON.stringify(data.events));
-                            alert("Importación exitosa. Recarga la página.");
+                            localStorage.setItem('cofrade_iguala_multi', JSON.stringify(data.iguala || {}));
+                            localStorage.setItem('cofrade_events', JSON.stringify(data.events || []));
+
+                            console.log("Datos guardados en LocalStorage.");
+
+                            // 3. Reset current paso
+                            if (data.pasos && data.pasos.length > 0) {
+                                localStorage.setItem('cofrade_current_paso', data.pasos[0].id);
+                                console.log("Paso actual reseteado a:", data.pasos[0].id);
+                            }
+
+                            alert("¡Importación correcta! La página se recargará ahora.");
                             window.location.reload();
                         }
                     } catch (err) {
-                        alert("Error al leer el archivo. Formato inválido.");
+                        console.error("Error importando:", err);
+                        alert("Error al leer el archivo: " + err.message);
                     }
                 };
                 reader.readAsText(file);
@@ -593,22 +699,25 @@
 
                     <Card>
                         <h3 className="text-xl font-bold mb-4 flex items-center gap-2">
-                            <Icon name="database" className="text-cofrade-purple" /> Conexión Backend (PHP/MySQL)
+                            <Icon name="database" className="text-cofrade-purple" /> Conexión Supabase
                         </h3>
-                        <form onSubmit={(e) => { e.preventDefault(); store.setBackendUrl(url); }} className="space-y-4">
+                        <form onSubmit={(e) => { e.preventDefault(); store.setSupabaseConfig(supabaseUrl, supabaseKey); }} className="space-y-4">
                             <p className="text-sm text-gray-500 mb-4">
-                                Configura la URL donde está alojada tu API PHP. Ej: <code>http://localhost/api</code>
+                                Configura la URL de tu proyecto Supabase y la clave pública (Anon Key).
                             </p>
-                            <div className="flex gap-2">
-                                <input required type="url" className="flex-1 px-3 py-2 border border-blue-200 rounded-lg bg-blue-50 focus:bg-white transition-colors"
-                                    placeholder="http://localhost/mi-proyecto"
-                                    value={url} onChange={e => setUrl(e.target.value)} />
-                                <Button type="submit">Guardar</Button>
+                            <div className="flex flex-col gap-2">
+                                <input required type="url" className="w-full px-3 py-2 border border-blue-200 rounded-lg bg-blue-50 focus:bg-white transition-colors"
+                                    placeholder="https://xxxx.supabase.co"
+                                    value={supabaseUrl} onChange={e => setSupabaseUrl(e.target.value)} />
+                                <input required type="password" className="w-full px-3 py-2 border border-blue-200 rounded-lg bg-blue-50 focus:bg-white transition-colors"
+                                    placeholder="Supabase Anon Key"
+                                    value={supabaseKey} onChange={e => setSupabaseKey(e.target.value)} />
+                                <Button type="submit" className="w-full mt-2">Guardar Configuración</Button>
                             </div>
                             {store.isOnline && (
                                 <div className="bg-green-50 border border-green-200 text-green-800 p-2 rounded-lg flex items-center gap-2 text-sm mt-2">
                                     <div className="w-2 h-2 bg-green-500 rounded-full animate-pulse"></div>
-                                    Conectado: {store.backendUrl}
+                                    Conectado a Supabase
                                 </div>
                             )}
                         </form>
@@ -640,7 +749,7 @@
                         </h3>
                         <div className="space-y-4">
                             <div>
-                                <label className="block text-sm font-medium text-gray-700 mb-2">Imagen de Fondo ({store.currentPaso.name})</label>
+                                <label className="block text-sm font-medium text-gray-700 mb-2">Imagen de Fondo ({store.currentPaso?.name || '...'})</label>
                                 <div className="flex items-center gap-4">
                                     <label className="flex items-center gap-2 px-4 py-2 border border-slate-300 rounded-lg cursor-pointer hover:bg-slate-50 shadow-sm bg-white">
                                         <Icon name="upload" size={16} />
@@ -678,7 +787,7 @@
                     <header className="mb-8 flex justify-between items-end">
                         <div className="flex items-center gap-4">
                             <div>
-                                <h1 className="text-3xl font-bold text-cofrade-dark">{store.currentPaso.name}</h1>
+                                <h1 className="text-3xl font-bold text-cofrade-dark">{store.currentPaso?.name || 'Cargando...'}</h1>
                                 <p className="text-cofrade-muted">Panel de control de la cuadrilla</p>
                             </div>
                             {store.isOnline && (
@@ -688,7 +797,7 @@
                             )}
                         </div>
                         <div className="bg-purple-100 text-cofrade-purple px-3 py-1 rounded-full text-sm font-bold uppercase tracking-wider">
-                            {store.currentPaso.type}
+                            {store.currentPaso?.type || '-'}
                         </div>
                     </header>
 
@@ -744,9 +853,71 @@
             );
         };
 
+        const CopyMemberModal = ({ isOpen, onClose, store, memberId }) => {
+            const [targetPasoId, setTargetPasoId] = useState('');
+            const [targetCuadrilla, setTargetCuadrilla] = useState('alta');
+
+            if (!isOpen) return null;
+
+            const handleCopy = () => {
+                if (!targetPasoId) return alert("Selecciona un paso destino");
+                store.copyMember(memberId, targetPasoId, targetCuadrilla);
+                onClose();
+            };
+
+            return (
+                <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-0 md:p-4">
+                    <div className="bg-white w-full h-full md:h-auto md:w-full md:max-w-md md:rounded-xl shadow-2xl overflow-hidden flex flex-col animate-in fade-in zoom-in-95 duration-200">
+                        <div className="bg-slate-50 border-b border-slate-100 p-4 flex justify-between items-center shrink-0">
+                            <h3 className="font-bold text-lg text-slate-800">Copiar Costalero</h3>
+                            <button onClick={onClose} className="text-gray-400 hover:text-gray-600 p-2"><Icon name="x" size={20} /></button>
+                        </div>
+                        <div className="p-6 space-y-4 overflow-y-auto flex-1">
+                            <div>
+                                <label className="block text-sm font-medium text-slate-700 mb-1">Paso Destino</label>
+                                <select className="w-full bg-white border border-slate-300 rounded-lg px-3 py-2 outline-none focus:ring-2 focus:ring-cofrade-purple"
+                                    value={targetPasoId} onChange={e => setTargetPasoId(e.target.value)}>
+                                    <option value="">Selecciona un paso...</option>
+                                    {store.pasos.filter(p => p.id !== store.currentPasoId).map(p => (
+                                        <option key={p.id} value={p.id}>{p.name}</option>
+                                    ))}
+                                    {/* Allow copying to same paso? Maybe useful for alta->baja copy */}
+                                    <option value={store.currentPasoId}>{store.currentPaso?.name || 'Actual'} (Este paso)</option>
+                                </select>
+                            </div>
+                            <div>
+                                <label className="block text-sm font-medium text-slate-700 mb-1">Cuadrilla Destino</label>
+                                <div className="flex gap-2">
+                                    <button
+                                        onClick={() => setTargetCuadrilla('alta')}
+                                        className={`flex-1 py-2 rounded-lg border text-sm font-medium transition-colors ${targetCuadrilla === 'alta' ? 'bg-cofrade-purple text-white border-cofrade-purple' : 'bg-white text-slate-600 border-slate-200 hover:bg-slate-50'}`}
+                                    >
+                                        Alta
+                                    </button>
+                                    <button
+                                        onClick={() => setTargetCuadrilla('baja')}
+                                        className={`flex-1 py-2 rounded-lg border text-sm font-medium transition-colors ${targetCuadrilla === 'baja' ? 'bg-cofrade-purple text-white border-cofrade-purple' : 'bg-white text-slate-600 border-slate-200 hover:bg-slate-50'}`}
+                                    >
+                                        Baja
+                                    </button>
+                                </div>
+                            </div>
+                            <div className="pt-4 flex gap-3">
+                                <button onClick={onClose} className="flex-1 py-2 text-slate-500 font-medium hover:bg-slate-50 rounded-lg transition-colors">Cancelar</button>
+                                <button onClick={handleCopy} className="flex-1 py-2 bg-cofrade-gold text-cofrade-dark font-bold rounded-lg hover:brightness-110 transition-all shadow-md">
+                                    Copiar
+                                </button>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            );
+        };
+
         const MembersView = ({ store }) => {
             const [isModalOpen, setIsModalOpen] = useState(false);
             const [editingId, setEditingId] = useState(null);
+            const [copyMemberId, setCopyMemberId] = useState(null);
             const [formData, setFormData] = useState({
                 dni: '', name: '', nickname: '', address: '', height: '', phone: '', position: 'Costero'
             });
@@ -813,7 +984,7 @@
                         m.startYear || '-'
                     ];
                 });
-                exportToPDF(`Listado Costaleros: ${store.currentPaso.name}`, headers, data, `costaleros_${store.currentPaso.name}.pdf`);
+                exportToPDF(`Listado Costaleros: ${store.currentPaso?.name || 'Costaleros'}`, headers, data, `costaleros_${store.currentPaso?.name || 'export'}.pdf`);
             };
 
             const closeModal = () => {
@@ -825,7 +996,7 @@
             return (
                 <div className="space-y-6">
                     <div className="flex justify-between items-center">
-                        <h2 className="text-2xl font-bold text-cofrade-dark">Cuadrilla: {store.currentPaso.name}</h2>
+                        <h2 className="text-2xl font-bold text-cofrade-dark">Cuadrilla: {store.currentPaso?.name || '...'}</h2>
                         <div className="flex gap-2">
                             <Button onClick={handleExport} variant="ghost" className="bg-white border hover:bg-slate-50 text-slate-600">
                                 <Icon name="file-down" size={18} /> PDF
@@ -838,7 +1009,7 @@
 
                     <div className="bg-white rounded-xl shadow-sm border border-slate-200 overflow-hidden">
                         <table className="w-full text-left border-collapse">
-                            <thead className="bg-slate-50 text-slate-500 font-semibold uppercase text-xs">
+                            <thead className="bg-slate-50 text-slate-500 font-semibold uppercase text-xs hidden md:table-header-group">
                                 <tr>
                                     <th className="p-4">Costalero</th>
                                     <th className="p-4 hidden md:table-cell">Contacto</th>
@@ -852,54 +1023,112 @@
                             <tbody className="divide-y divide-slate-100">
                                 {store.currentMembers.length === 0 ? (
                                     <tr>
-                                        <td colSpan="5" className="p-8 text-center text-gray-400">
+                                        <td colSpan="7" className="p-8 text-center text-gray-400">
                                             No hay costaleros registrados en este paso.
                                         </td>
                                     </tr>
                                 ) : store.currentMembers.map(member => (
-                                    <tr key={member.id} className="hover:bg-slate-50 transition-colors">
-                                        <td className="p-4">
-                                            <div className="font-bold text-slate-800">{member.name}</div>
-                                            {member.nickname && <div className="text-xs text-cofrade-purple font-medium">"{member.nickname}"</div>}
-                                            <div className="text-xs text-gray-400 uppercase mt-0.5">{member.dni}</div>
-                                        </td>
-                                        <td className="p-4 hidden md:table-cell">
-                                            <div className="text-sm text-slate-600 flex items-center gap-1">
-                                                <Icon name="phone" size={12} /> {member.phone}
-                                            </div>
-                                            {member.address && (
-                                                <div className="text-xs text-slate-400 mt-1 flex items-center gap-1">
-                                                    <Icon name="map-pin" size={12} /> {member.address}
+                                    <React.Fragment key={member.id}>
+                                        {/* Desktop Row */}
+                                        <tr className="hover:bg-slate-50 transition-colors hidden md:table-row">
+                                            <td className="p-4">
+                                                <div className="font-bold text-slate-800">{member.name}</div>
+                                                {member.nickname && <div className="text-xs text-cofrade-purple font-medium">"{member.nickname}"</div>}
+                                                <div className="text-xs text-gray-400 uppercase mt-0.5">{member.dni}</div>
+                                            </td>
+                                            <td className="p-4 hidden md:table-cell">
+                                                <div className="text-sm text-slate-600 flex items-center gap-1">
+                                                    <Icon name="phone" size={12} /> {member.phone}
                                                 </div>
-                                            )}
-                                        </td>
-                                        <td className="p-4 text-slate-600 font-medium">{member.height} cm</td>
-                                        <td className="p-4 font-bold text-slate-700 text-center">
-                                            {(() => {
-                                                const assign = getAssignment(member.id);
-                                                return assign ? `T-${assign.row}` : (member.trabajadera || '-');
-                                            })()}
-                                        </td>
-                                        <td className="p-4">
-                                            <span className="bg-purple-50 text-cofrade-purple px-2 py-1 rounded-md text-xs font-semibold uppercase tracking-wide">
+                                                {member.address && (
+                                                    <div className="text-xs text-slate-400 mt-1 flex items-center gap-1">
+                                                        <Icon name="map-pin" size={12} /> {member.address}
+                                                    </div>
+                                                )}
+                                            </td>
+                                            <td className="p-4 text-slate-600 font-medium">{member.height} cm</td>
+                                            <td className="p-4 font-bold text-slate-700 text-center">
                                                 {(() => {
                                                     const assign = getAssignment(member.id);
-                                                    return assign ? getSpotLabel(assign.row, assign.spot) : member.position;
+                                                    return assign ? `T-${assign.row}` : (member.trabajadera || '-');
                                                 })()}
-                                            </span>
-                                        </td>
-                                        <td className="p-4 text-slate-600 font-medium">
-                                            {member.startYear || '-'}
-                                        </td>
-                                        <td className="p-4 text-right">
-                                            <button onClick={() => openEdit(member)} className="text-blue-500 hover:text-blue-700 mr-3">
-                                                <Icon name="pencil" size={18} />
-                                            </button>
-                                            <button onClick={() => { if (confirm('¿Borrar costalero?')) store.deleteMember(member.id) }} className="text-red-400 hover:text-red-600">
-                                                <Icon name="trash-2" size={18} />
-                                            </button>
-                                        </td>
-                                    </tr>
+                                            </td>
+                                            <td className="p-4">
+                                                <span className={`px-2 py-1 rounded-md text-xs font-semibold uppercase tracking-wide w-fit ${(() => {
+                                                    const assign = getAssignment(member.id);
+                                                    const pos = assign ? getSpotLabel(assign.row, assign.spot) : member.position;
+                                                    return pos === 'PATERO' ? 'bg-purple-100 text-purple-700' :
+                                                        pos === 'FIJADOR' ? 'bg-blue-100 text-blue-700' :
+                                                            pos === 'COSTERO' ? 'bg-orange-100 text-orange-700' :
+                                                                'bg-slate-100 text-slate-600';
+                                                })()
+                                                    }`}>
+                                                    {(() => {
+                                                        const assign = getAssignment(member.id);
+                                                        return assign ? getSpotLabel(assign.row, assign.spot) : member.position;
+                                                    })()}
+                                                </span>
+                                            </td>
+                                            <td className="p-4 text-slate-600 font-medium">
+                                                {member.startYear || '-'}
+                                            </td>
+                                            <td className="p-4 text-right">
+                                                <div className="flex justify-end gap-2">
+                                                    <button onClick={() => setCopyMemberId(member.id)} className="p-2 border rounded-lg text-slate-400 hover:text-cofrade-purple hover:bg-purple-50" title="Copiar a otro paso"><Icon name="copy" size={16} /></button>
+                                                    <button onClick={() => openEdit(member)} className="p-2 border rounded-lg text-blue-500 hover:bg-blue-50"><Icon name="pencil" size={16} /></button>
+                                                    <button onClick={() => { if (confirm('¿Borrar?')) store.deleteMember(member.id) }} className="p-2 border rounded-lg text-red-500 hover:bg-red-50"><Icon name="trash-2" size={16} /></button>
+                                                </div>
+                                            </td>
+                                        </tr>
+
+                                        {/* Mobile Card */}
+                                        <tr className="md:hidden block border-b border-slate-100 p-4">
+                                            <td className="block">
+                                                <div className="flex justify-between items-start mb-2">
+                                                    <div>
+                                                        <div className="font-bold text-slate-800 text-lg">{member.name}</div>
+                                                        <div className="flex items-center gap-2 text-sm text-gray-500">
+                                                            {member.nickname && <span className="text-cofrade-purple font-medium">"{member.nickname}"</span>}
+                                                            <span>• {member.height} cm</span>
+                                                        </div>
+                                                    </div>
+                                                    <span className={`px-2 py-1 rounded text-[10px] font-bold uppercase ${(() => {
+                                                        const assign = getAssignment(member.id);
+                                                        const pos = assign ? getSpotLabel(assign.row, assign.spot) : member.position;
+                                                        return pos === 'PATERO' ? 'bg-purple-100 text-purple-700' : 'bg-slate-100 text-slate-600';
+                                                    })()
+                                                        }`}>
+                                                        {(() => {
+                                                            const assign = getAssignment(member.id);
+                                                            return assign ? getSpotLabel(assign.row, assign.spot) : member.position;
+                                                        })()}
+                                                    </span>
+                                                </div>
+
+                                                <div className="grid grid-cols-2 gap-2 text-sm text-gray-600 mb-3">
+                                                    <div className="flex items-center gap-1"><Icon name="phone" size={12} /> {member.phone || '-'}</div>
+                                                    <div className="flex items-center gap-1"><Icon name="user" size={12} /> Trab: <span className="font-bold">{
+                                                        (() => {
+                                                            const assign = getAssignment(member.id);
+                                                            return assign ? `T-${assign.row}` : (member.trabajadera || '-');
+                                                        })()
+                                                    }</span></div>
+                                                </div>
+
+                                                <div className="flex gap-2 mt-3">
+                                                    <Button onClick={() => setCopyMemberId(member.id)} variant="ghost" className="bg-slate-50 border border-slate-200 text-xs py-1 h-8 px-2 text-slate-500">
+                                                        <Icon name="copy" size={14} />
+                                                    </Button>
+                                                    <Button onClick={() => openEdit(member)} variant="ghost" className="flex-1 bg-slate-50 border border-slate-200 text-xs py-1 h-8">
+                                                        Editar
+                                                    </Button>
+                                                    <Button onClick={() => { if (confirm('¿Borrar costalero?')) store.deleteMember(member.id) }} variant="ghost" className="flex-1 bg-red-50 border border-red-100 text-red-600 text-xs py-1 h-8">
+                                                        Borrar
+                                                    </Button>
+                                                </div>
+                                            </td>
+                                        </tr>
+                                    </React.Fragment>
                                 ))}
                             </tbody>
                         </table>
@@ -972,12 +1201,20 @@
                             </div>
                         </form>
                     </Modal>
+
+                    <CopyMemberModal
+                        isOpen={!!copyMemberId}
+                        onClose={() => setCopyMemberId(null)}
+                        store={store}
+                        memberId={copyMemberId}
+                    />
                 </div>
             );
         };
 
         const IgualaView = ({ store }) => {
             const [selectedMemberId, setSelectedMemberId] = useState('');
+            const [isSidebarOpen, setIsSidebarOpen] = useState(false); // Mobile state
 
             const rowCount = store.currentIguala.rows || 1;
             const spotsPerRow = store.currentIguala.count || 6;
@@ -1010,11 +1247,11 @@
             };
 
             return (
-                <div className="flex flex-col md:flex-row gap-6 h-[calc(100vh-140px)]">
+                <div className="flex flex-col md:flex-row gap-6 h-[calc(100dvh-140px)] md:h-[calc(100dvh-140px)] relative">
                     {/* Visualizer */}
-                    <div className="flex-1 bg-white rounded-xl shadow-sm border border-slate-200 p-6 overflow-y-auto">
+                    <div className="flex-1 bg-white md:rounded-xl shadow-sm border-x-0 border-y md:border border-slate-200 p-2 md:p-6 overflow-y-auto pb-20 md:pb-6">
                         <header className="flex flex-wrap justify-between items-center mb-6 gap-4">
-                            <h2 className="text-2xl font-bold text-cofrade-dark">Plano: {store.currentPaso.name}</h2>
+                            <h2 className="text-2xl font-bold text-cofrade-dark">Plano: {store.currentPaso?.name || '...'}</h2>
                             <div className="flex gap-4">
                                 <div className="flex items-center gap-2">
                                     <label className="text-sm text-gray-600 font-bold">Trabajaderas:</label>
@@ -1032,54 +1269,70 @@
                             </div>
                         </header>
 
-                        <div className="space-y-4 max-w-4xl mx-auto pb-10">
-                            <div className="w-full h-4 bg-cofrade-gold/30 rounded-full mb-8 flex items-center justify-center text-[10px] text-yellow-800 font-bold uppercase tracking-widest">Frontal del Paso</div>
+                        <div className="overflow-x-auto">
+                            <div className="space-y-4 max-w-4xl min-w-[600px] mx-auto pb-10">
+                                <div className="w-full h-4 bg-cofrade-gold/30 rounded-full mb-8 flex items-center justify-center text-[10px] text-yellow-800 font-bold uppercase tracking-widest">Frontal del Paso</div>
 
-                            {rows.map((row) => (
-                                <div key={row} className="bg-slate-50 p-3 rounded-lg border border-slate-200">
-                                    <h4 className="text-xs font-bold text-gray-400 uppercase mb-2 text-center">Trabajadera {row}</h4>
-                                    <div className="flex justify-between gap-3">
-                                        {spots.map(spot => {
-                                            const member = getSpotMember(row, spot);
-                                            const label = getSpotLabel(row, spot);
-                                            const isPatero = label === 'PATERO' || label === 'COSTERO';
+                                {rows.map((row) => (
+                                    <div key={row} className="bg-slate-50 p-3 rounded-lg border border-slate-200">
+                                        <h4 className="text-xs font-bold text-gray-400 uppercase mb-2 text-center">Trabajadera {row}</h4>
+                                        <div className="flex justify-between gap-3">
+                                            {spots.map(spot => {
+                                                const member = getSpotMember(row, spot);
+                                                const label = getSpotLabel(row, spot);
+                                                const isPatero = label === 'PATERO' || label === 'COSTERO';
 
-                                            return (
-                                                <div key={spot} className="flex-1 flex flex-col gap-1 min-w-[60px]">
-                                                    <div
-                                                        className={`h-24 rounded-lg border-2 border-dashed transition-all flex flex-col items-center justify-center p-1 text-center cursor-pointer group relative
+                                                return (
+                                                    <div key={spot} className="flex-1 flex flex-col gap-1 min-w-[60px]">
+                                                        <div
+                                                            className={`h-24 rounded-lg border-2 border-dashed transition-all flex flex-col items-center justify-center p-1 text-center cursor-pointer group relative
                                                             ${selectedMemberId && !member ? 'border-cofrade-purple bg-purple-50 animate-pulse' : ''}
                                                             ${member ? 'bg-white border-solid border-purple-200 shadow-sm' : 'border-slate-300 hover:border-gray-400'}`}
-                                                        onClick={() => !member ? handleAssign(row, spot) : null}
-                                                    >
-                                                        {member ? (
-                                                            <>
-                                                                <button
-                                                                    onClick={(e) => { e.stopPropagation(); store.unassignSpot(row, spot); }}
-                                                                    className="absolute -top-2 -right-2 bg-red-100 text-red-500 rounded-full p-1 opacity-0 group-hover:opacity-100 transition-opacity z-10 shadow-sm"
-                                                                >
-                                                                    <Icon name="x" size={12} />
-                                                                </button>
-                                                                <span className="font-bold text-xs md:text-sm text-cofrade-dark break-words w-full leading-tight">{member.name}</span>
-                                                                <span className="text-[10px] text-cofrade-purple font-medium mt-1">{member.height} cm</span>
-                                                            </>
-                                                        ) : (
-                                                            <span className={`text-[9px] uppercase font-bold tracking-tighter ${isPatero ? 'text-cofrade-purple' : 'text-gray-300'}`}>{label}</span>
-                                                        )}
+                                                            onClick={() => !member ? handleAssign(row, spot) : null}
+                                                        >
+                                                            {member ? (
+                                                                <>
+                                                                    <button
+                                                                        onClick={(e) => { e.stopPropagation(); store.unassignSpot(row, spot); }}
+                                                                        className="absolute -top-2 -right-2 bg-red-100 text-red-500 rounded-full p-1 opacity-0 group-hover:opacity-100 transition-opacity z-10 shadow-sm"
+                                                                    >
+                                                                        <Icon name="x" size={12} />
+                                                                    </button>
+                                                                    <span className="font-bold text-xs md:text-sm text-cofrade-dark break-words w-full leading-tight">{(member.nickname && member.nickname.trim()) ? member.nickname : member.name}</span>
+                                                                    <span className="text-[10px] text-cofrade-purple font-medium mt-1">{member.height} cm</span>
+                                                                </>
+                                                            ) : (
+                                                                <span className={`text-[9px] uppercase font-bold tracking-tighter ${isPatero ? 'text-cofrade-purple' : 'text-gray-300'}`}>{label}</span>
+                                                            )}
+                                                        </div>
                                                     </div>
-                                                </div>
-                                            )
-                                        })}
+                                                )
+                                            })}
+                                        </div>
                                     </div>
-                                </div>
-                            ))}
+                                ))}
+                            </div>
                         </div>
                     </div>
 
-                    {/* Sidebar Palette */}
-                    <div className="w-full md:w-80 bg-white rounded-xl shadow-sm border border-slate-200 flex flex-col overflow-hidden max-h-[50vh] md:max-h-full">
-                        <div className="p-4 border-b border-gray-100 bg-gray-50">
-                            <h3 className="font-bold text-gray-700">Sin Asignar ({availableMembers.length})</h3>
+                    {/* Sidebar Palette - Mobile Bottom Sheet */}
+                    <div className={`
+                        fixed md:static left-0 right-0 z-40 bg-white md:bg-white
+                        transition-all duration-300 ease-in-out shadow-[0_-4px_6px_-1px_rgba(0,0,0,0.1)] md:shadow-sm
+                        flex flex-col overflow-hidden
+                        border-t border-slate-200 md:border md:rounded-xl
+                        ${isSidebarOpen ? 'h-[50dvh] bottom-[64px]' : 'h-12 bottom-[64px]'}
+                        md:h-full md:w-80 md:shadow-sm md:bottom-auto
+                    `}>
+                        <div
+                            className="p-3 md:p-4 border-b border-gray-100 bg-gray-50 flex justify-between items-center cursor-pointer md:cursor-default"
+                            onClick={() => setIsSidebarOpen(!isSidebarOpen)}
+                        >
+                            <h3 className="font-bold text-gray-700 flex items-center gap-2">
+                                <Icon name={isSidebarOpen ? "chevron-down" : "chevron-up"} size={16} className="md:hidden" />
+                                Sin Asignar ({availableMembers.length})
+                            </h3>
+                            {selectedMemberId && <span className="text-xs bg-cofrade-purple text-white px-2 py-0.5 rounded-full animate-pulse md:hidden">1 selec.</span>}
                         </div>
                         <div className="p-2 overflow-y-auto flex-1 space-y-2">
                             {availableMembers.length === 0 ? (
@@ -1088,7 +1341,10 @@
                                 selectedMemberId && (
                                     <div className="bg-purple-50 border border-cofrade-purple p-3 rounded-lg flex justify-between items-center mb-2">
                                         <span className="font-bold text-sm text-cofrade-purple">
-                                            {availableMembers.find(m => m.id === selectedMemberId)?.name}
+                                            {(() => {
+                                                const m = availableMembers.find(m => m.id === selectedMemberId);
+                                                return m ? ((m.nickname && m.nickname.trim()) ? m.nickname : m.name) : '';
+                                            })()}
                                         </span>
                                         <button onClick={() => setSelectedMemberId('')}><Icon name="x" size={16} /></button>
                                     </div>
@@ -1105,7 +1361,7 @@
                                             : 'bg-white border-slate-100 hover:border-purple-200'}`}
                                 >
                                     <div>
-                                        <p className="font-medium text-sm">{member.name}</p>
+                                        <p className="font-medium text-sm">{(member.nickname && member.nickname.trim()) ? member.nickname : member.name}</p>
                                         <p className="text-xs text-gray-400">{member.position}</p>
                                     </div>
                                     <span className="font-bold text-sm text-slate-600">{member.height}</span>
@@ -1113,7 +1369,7 @@
                             ))}
                         </div>
                     </div>
-                </div>
+                </div >
             );
         };
 
@@ -1273,7 +1529,7 @@
 
                     <div className="bg-white rounded-xl shadow-sm border border-slate-200 overflow-hidden">
                         <table className="w-full text-left border-collapse">
-                            <thead className="bg-slate-50 text-slate-500 font-semibold uppercase text-xs">
+                            <thead className="bg-slate-50 text-slate-500 font-semibold uppercase text-xs hidden md:table-header-group">
                                 <tr>
                                     <th className="p-4">Aspirante</th>
                                     <th className="p-4 hidden md:table-cell">Contacto</th>
@@ -1287,51 +1543,89 @@
                             <tbody className="divide-y divide-slate-100">
                                 {store.currentAspirantes.length === 0 ? (
                                     <tr>
-                                        <td colSpan="5" className="p-8 text-center text-gray-400">
+                                        <td colSpan="7" className="p-8 text-center text-gray-400">
                                             No hay aspirantes registrados en este paso.
                                         </td>
                                     </tr>
                                 ) : store.currentAspirantes.map(member => (
-                                    <tr key={member.id} className="hover:bg-slate-50 transition-colors">
-                                        <td className="p-4">
-                                            <div className="font-bold text-slate-800">{member.name}</div>
-                                            {member.nickname && <div className="text-xs text-cofrade-purple font-medium">"{member.nickname}"</div>}
-                                            <div className="text-xs text-gray-400 uppercase mt-0.5">{member.dni}</div>
-                                        </td>
-                                        <td className="p-4 hidden md:table-cell">
-                                            <div className="text-sm text-slate-600 flex items-center gap-1">
-                                                <Icon name="phone" size={12} /> {member.phone}
-                                            </div>
-                                            {member.address && (
-                                                <div className="text-xs text-slate-400 mt-1 flex items-center gap-1">
-                                                    <Icon name="map-pin" size={12} /> {member.address}
+                                    <React.Fragment key={member.id}>
+                                        {/* Desktop Row */}
+                                        <tr className="hover:bg-slate-50 transition-colors hidden md:table-row">
+                                            <td className="p-4">
+                                                <div className="font-bold text-slate-800">{member.name}</div>
+                                                {member.nickname && <div className="text-xs text-cofrade-purple font-medium">"{member.nickname}"</div>}
+                                                <div className="text-xs text-gray-400 uppercase mt-0.5">{member.dni}</div>
+                                            </td>
+                                            <td className="p-4 hidden md:table-cell">
+                                                <div className="text-sm text-slate-600 flex items-center gap-1">
+                                                    <Icon name="phone" size={12} /> {member.phone}
                                                 </div>
-                                            )}
-                                        </td>
-                                        <td className="p-4 text-slate-600 font-medium">{member.height} cm</td>
-                                        <td className="p-4 font-bold text-slate-700 text-center">
-                                            {member.trabajadera || '-'}
-                                        </td>
-                                        <td className="p-4">
-                                            <span className="bg-purple-50 text-cofrade-purple px-2 py-1 rounded-md text-xs font-semibold uppercase tracking-wide w-fit">
-                                                {member.position}
-                                            </span>
-                                        </td>
-                                        <td className="p-4 text-slate-600 font-medium">
-                                            {member.startYear || '-'}
-                                        </td>
-                                        <td className="p-4 text-right flex justify-end gap-2">
-                                            <button onClick={() => store.promoteAspirante(member)} className="text-green-600 hover:text-green-800 flex items-center gap-1 text-sm font-medium mr-2 bg-green-50 px-2 py-1 rounded border border-green-200" title="Ascender a Titular">
-                                                <Icon name="arrow-up-circle" size={16} /> <span className="hidden sm:inline">Ascender</span>
-                                            </button>
-                                            <button onClick={() => openEdit(member)} className="text-blue-500 hover:text-blue-700">
-                                                <Icon name="pencil" size={18} />
-                                            </button>
-                                            <button onClick={() => { if (confirm('¿Borrar aspirante?')) store.deleteMember(member.id) }} className="text-red-400 hover:text-red-600">
-                                                <Icon name="trash-2" size={18} />
-                                            </button>
-                                        </td>
-                                    </tr>
+                                                {member.address && (
+                                                    <div className="text-xs text-slate-400 mt-1 flex items-center gap-1">
+                                                        <Icon name="map-pin" size={12} /> {member.address}
+                                                    </div>
+                                                )}
+                                            </td>
+                                            <td className="p-4 text-slate-600 font-medium">{member.height} cm</td>
+                                            <td className="p-4 font-bold text-slate-700 text-center">
+                                                {member.trabajadera || '-'}
+                                            </td>
+                                            <td className="p-4">
+                                                <span className="bg-purple-50 text-cofrade-purple px-2 py-1 rounded-md text-xs font-semibold uppercase tracking-wide w-fit">
+                                                    {member.position}
+                                                </span>
+                                            </td>
+                                            <td className="p-4 text-slate-600 font-medium">
+                                                {member.startYear || '-'}
+                                            </td>
+                                            <td className="p-4 text-right flex justify-end gap-2">
+                                                <button onClick={() => store.promoteAspirante(member)} className="text-green-600 hover:text-green-800 flex items-center gap-1 text-sm font-medium mr-2 bg-green-50 px-2 py-1 rounded border border-green-200" title="Ascender a Titular">
+                                                    <Icon name="arrow-up-circle" size={16} /> <span className="hidden sm:inline">Ascender</span>
+                                                </button>
+                                                <button onClick={() => openEdit(member)} className="text-blue-500 hover:text-blue-700">
+                                                    <Icon name="pencil" size={18} />
+                                                </button>
+                                                <button onClick={() => { if (confirm('¿Borrar aspirante?')) store.deleteMember(member.id) }} className="text-red-400 hover:text-red-600">
+                                                    <Icon name="trash-2" size={18} />
+                                                </button>
+                                            </td>
+                                        </tr>
+
+                                        {/* Mobile Card */}
+                                        <tr className="md:hidden block border-b border-slate-100 p-4">
+                                            <td className="block">
+                                                <div className="flex justify-between items-start mb-2">
+                                                    <div>
+                                                        <div className="font-bold text-slate-800 text-lg">{member.name}</div>
+                                                        <div className="flex items-center gap-2 text-sm text-gray-500">
+                                                            {member.nickname && <span className="text-cofrade-purple font-medium">"{member.nickname}"</span>}
+                                                            <span>• {member.height} cm</span>
+                                                        </div>
+                                                    </div>
+                                                    <span className="bg-purple-50 text-cofrade-purple px-2 py-1 rounded-md text-[10px] font-semibold uppercase tracking-wide">
+                                                        {member.position}
+                                                    </span>
+                                                </div>
+
+                                                <div className="grid grid-cols-2 gap-2 text-sm text-gray-600 mb-3">
+                                                    <div className="flex items-center gap-1"><Icon name="phone" size={12} /> {member.phone || '-'}</div>
+                                                    <div className="flex items-center gap-1"><Icon name="calendar" size={12} /> 1ª Igualá: <span className="font-bold">{member.startYear || '-'}</span></div>
+                                                </div>
+
+                                                <div className="grid grid-cols-2 gap-2 mt-3">
+                                                    <Button onClick={() => store.promoteAspirante(member)} variant="ghost" className="col-span-2 bg-green-50 border border-green-200 text-green-700 text-xs py-1 h-8 flex items-center justify-center gap-2">
+                                                        <Icon name="arrow-up-circle" size={14} /> Ascender a Titular
+                                                    </Button>
+                                                    <Button onClick={() => openEdit(member)} variant="ghost" className="bg-slate-50 border border-slate-200 text-xs py-1 h-8">
+                                                        Editar
+                                                    </Button>
+                                                    <Button onClick={() => { if (confirm('¿Borrar?')) store.deleteMember(member.id) }} variant="ghost" className="bg-red-50 border border-red-100 text-red-600 text-xs py-1 h-8">
+                                                        Borrar
+                                                    </Button>
+                                                </div>
+                                            </td>
+                                        </tr>
+                                    </React.Fragment>
                                 ))}
                             </tbody>
                         </table>
@@ -1423,7 +1717,35 @@
             </button>
         );
 
-        const PasoSelector = ({ store }) => {
+        const MobileNavItem = ({ icon, label, active, onClick }) => (
+            <button
+                onClick={onClick}
+                className={`flex flex-col items-center justify-center w-full py-2 transition-colors
+                    ${active ? 'text-cofrade-purple' : 'text-slate-400'}`}
+            >
+                <Icon name={icon} size={20} className={active ? "mb-1" : "mb-1 opacity-70"} />
+                <span className="text-[10px] font-medium">{label}</span>
+            </button>
+        );
+
+        const MobileNav = ({ view, setView }) => (
+            <div className="fixed bottom-0 left-0 right-0 bg-white border-t border-slate-200 flex justify-around items-end pb-safe px-2 h-16 z-50 md:hidden shadow-[0_-5px_10px_rgba(0,0,0,0.05)]">
+                <MobileNavItem icon="users" label="Cuadrilla" active={view === 'members'} onClick={() => setView('members')} />
+                <MobileNavItem icon="layout-grid" label="Igualá" active={view === 'iguala'} onClick={() => setView('iguala')} />
+                <div className="relative -top-5">
+                    <button
+                        onClick={() => setView('dashboard')}
+                        className={`w-14 h-14 rounded-full flex items-center justify-center shadow-lg border-4 border-slate-50 transition-transform ${view === 'dashboard' ? 'bg-cofrade-purple text-white scale-110' : 'bg-cofrade-gold text-white'}`}
+                    >
+                        <Icon name="crown" size={28} />
+                    </button>
+                </div>
+                <MobileNavItem icon="calendar" label="Eventos" active={view === 'events'} onClick={() => setView('events')} />
+                <MobileNavItem icon="menu" label="Menu" active={['aspirantes', 'settings'].includes(view)} onClick={() => setView('settings')} />
+            </div>
+        );
+
+        const PasoSelector = ({ store, mobile }) => {
             const [isCreating, setIsCreating] = useState(false);
             const [isEditing, setIsEditing] = useState(false);
             const [newName, setNewName] = useState('');
@@ -1451,26 +1773,28 @@
             };
 
             return (
-                <div className="px-4 mb-6">
-                    <div className="flex justify-between items-center px-2 mb-2">
-                        <p className="text-xs font-bold text-slate-500 uppercase tracking-wider">Paso Activo</p>
-                        {!isEditing && !isCreating && (
-                            <button onClick={startEdit} className="text-slate-500 hover:text-white transition-colors" title="Editar nombre">
-                                <Icon name="pencil" size={12} />
-                            </button>
-                        )}
-                    </div>
+                <div className={`${mobile ? '' : 'px-4 mb-6'}`}>
+                    {!mobile && (
+                        <div className="flex justify-between items-center px-2 mb-2">
+                            <p className="text-xs font-bold text-slate-500 uppercase tracking-wider">Paso Activo</p>
+                            {!isEditing && !isCreating && (
+                                <button onClick={startEdit} className="text-slate-500 hover:text-white transition-colors" title="Editar nombre">
+                                    <Icon name="pencil" size={12} />
+                                </button>
+                            )}
+                        </div>
+                    )}
 
                     {isEditing ? (
                         <form onSubmit={handleUpdate} className="flex gap-2">
                             <input
                                 autoFocus
-                                className="w-full bg-slate-800 text-white rounded-lg px-3 py-2 outline-none border border-cofrade-purple focus:ring-1 focus:ring-cofrade-purple font-medium"
+                                className="w-full bg-slate-800 text-white rounded-lg px-2 py-1 text-sm outline-none border border-cofrade-purple focus:ring-1 focus:ring-cofrade-purple font-medium"
                                 value={editName}
                                 onChange={e => setEditName(e.target.value)}
                             />
-                            <button type="submit" className="text-green-400 hover:text-green-300"><Icon name="check" size={18} /></button>
-                            <button type="button" onClick={() => setIsEditing(false)} className="text-red-400 hover:text-red-300"><Icon name="x" size={18} /></button>
+                            <button type="submit" className="text-green-400 hover:text-green-300"><Icon name="check" size={16} /></button>
+                            <button type="button" onClick={() => setIsEditing(false)} className="text-red-400 hover:text-red-300"><Icon name="x" size={16} /></button>
                         </form>
                     ) : (
                         <div className="relative">
@@ -1490,6 +1814,24 @@
                             <div className="absolute right-3 top-3 pointer-events-none text-slate-400">
                                 <Icon name="chevron-down" size={16} />
                             </div>
+                        </div>
+                    )}
+
+                    {/* Cuadrilla Toggle */}
+                    {!isCreating && (
+                        <div className="mt-2 flex bg-slate-800 rounded-lg p-1 border border-slate-700">
+                            <button
+                                onClick={() => store.setCurrentCuadrilla('alta')}
+                                className={`flex-1 text-xs py-1 rounded transition-colors ${store.currentCuadrilla === 'alta' ? 'bg-cofrade-purple text-white font-bold' : 'text-slate-400 hover:text-white'}`}
+                            >
+                                Alta
+                            </button>
+                            <button
+                                onClick={() => store.setCurrentCuadrilla('baja')}
+                                className={`flex-1 text-xs py-1 rounded transition-colors ${store.currentCuadrilla === 'baja' ? 'bg-cofrade-purple text-white font-bold' : 'text-slate-400 hover:text-white'}`}
+                            >
+                                Baja
+                            </button>
                         </div>
                     )}
 
@@ -1525,7 +1867,7 @@
             });
 
             return (
-                <div className="flex h-screen font-sans relative overflow-hidden">
+                <div className="flex h-screen md:h-screen h-[100dvh] font-sans relative overflow-hidden">
                     {/* Background Image */}
                     {store.currentBgImage ? (
                         <div className="absolute inset-0 z-0 pointer-events-none" style={{
@@ -1539,15 +1881,15 @@
                         <div className="absolute inset-0 z-0 bg-slate-50"></div>
                     )}
 
-                    {/* Sidebar */}
-                    <aside className="w-64 bg-cofrade-dark text-white flex flex-col shadow-2xl z-10 shrink-0">
+                    {/* Sidebar (Desktop) */}
+                    <aside className="hidden md:flex w-64 bg-cofrade-dark text-white flex-col shadow-2xl z-10 shrink-0">
                         <div className="p-6 border-b border-slate-700 flex items-center gap-3 mb-2">
                             <div className="bg-cofrade-gold p-2 rounded-lg text-cofrade-dark">
                                 <Icon name="crown" size={24} />
                             </div>
                             <div>
-                                <h1 className="font-bold text-lg tracking-tight">Equipo Capataces</h1>
-                                <p className="text-xs text-slate-400">Online Mode</p>
+                                <h1 className="font-bold text-lg tracking-tight">Gestor Cuadrillas</h1>
+                                <p className="text-xs text-slate-400">Panel de Control</p>
                             </div>
                         </div>
 
@@ -1564,17 +1906,30 @@
                         </nav>
 
                         <div className="p-4 border-t border-slate-700">
-                            <div className="flex items-center gap-3 px-4 py-2 opacity-60 hover:opacity-100 transition-opacity cursor-pointer"
-                                onClick={() => store.deletePaso(store.currentPasoId)}>
+                            <div className="flex items-center gap-3 px-4 py-2 opacity-60 hover:opacity-100 transition-opacity cursor-pointer text-red-400"
+                                onClick={() => { if (confirm('¿Borrar Paso actual?')) store.deletePaso(store.currentPasoId) }}>
                                 <Icon name="trash-2" size={16} />
                                 <span className="text-xs">Borrar Paso Actual</span>
                             </div>
                         </div>
                     </aside>
 
+                    {/* Mobile Header */}
+                    <div className="md:hidden absolute top-0 left-0 right-0 h-16 bg-cofrade-dark text-white z-20 flex items-center justify-between px-4 shadow-md">
+                        <div className="flex items-center gap-2">
+                            <div className="bg-cofrade-gold p-1.5 rounded-lg text-cofrade-dark">
+                                <Icon name="crown" size={18} />
+                            </div>
+                            <span className="font-bold text-lg">Gestor</span>
+                        </div>
+                        <div className="w-48">
+                            <PasoSelector store={store} mobile={true} />
+                        </div>
+                    </div>
+
                     {/* Main Content */}
-                    <main className="flex-1 overflow-y-auto z-10 relative bg-slate-50/50">
-                        <div className="p-4 md:p-8 max-w-7xl mx-auto h-full">
+                    <main className="flex-1 overflow-y-auto z-10 relative bg-slate-50/50 pt-16 pb-20 md:pt-0 md:pb-0">
+                        <div className="p-0 md:p-8 max-w-7xl mx-auto min-h-full">
                             {view === 'dashboard' && <Dashboard store={store} setView={setView} />}
                             {view === 'members' && <MembersView store={store} />}
                             {view === 'aspirantes' && <AspirantesView store={store} />}
@@ -1583,6 +1938,9 @@
                             {view === 'settings' && <SettingsView store={store} />}
                         </div>
                     </main>
+
+                    {/* Mobile Navigation */}
+                    <MobileNav view={view} setView={setView} />
                 </div>
             );
         };
