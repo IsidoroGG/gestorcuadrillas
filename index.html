@@ -278,14 +278,23 @@
                 setSyncStatus('syncing');
                 try {
                     const [resPasos, resMembers, resIguala, resEvents] = await Promise.all([
-                        supabaseClient.from('pasos').select('*').then(r => r.data),
-                        supabaseClient.from('members').select('*').then(r => r.data),
-                        supabaseClient.from('iguala').select('*').then(r => r.data),
-                        supabaseClient.from('events').select('*').then(r => r.data)
+                        supabaseClient.from('pasos').select('*').then(r => { if (r.error) throw r.error; return r.data; }),
+                        supabaseClient.from('members').select('*').then(r => { if (r.error) throw r.error; return r.data; }),
+                        supabaseClient.from('iguala').select('*').then(r => { if (r.error) throw r.error; return r.data; }),
+                        supabaseClient.from('events').select('*').then(r => { if (r.error) throw r.error; return r.data; })
                     ]);
 
                     if (resPasos && Array.isArray(resPasos) && resPasos.length > 0) {
-                        setPasos(resPasos);
+                        setPasos(resPasos.map(p => ({ id: p.id, name: p.name, type: p.type })));
+                        
+                        const newBgImages = {};
+                        resPasos.forEach(p => {
+                            if (p.bg_image) newBgImages[p.id] = p.bg_image;
+                        });
+                        if (Object.keys(newBgImages).length > 0) {
+                            setBackgroundImages(newBgImages);
+                        }
+
                         // If current ID doesn't exist in remote, reset to first
                         if (!resPasos.find(p => p.id === currentPasoId)) {
                             setCurrentPasoId(resPasos[0].id);
@@ -364,8 +373,9 @@
 
                 if (isOnline) {
                     try {
-                        await supabaseClient.from('pasos').insert({ id: newId, name, type });
-                        await supabaseClient.from('iguala').insert([
+                        const { error: error1 } = await supabaseClient.from('pasos').insert({ id: newId, name, type });
+                        if (error1) throw error1;
+                        const { error: error2 } = await supabaseClient.from('iguala').insert([
                             {
                                 paso_id: newId,
                                 cuadrilla_type: 'alta',
@@ -379,6 +389,7 @@
                                 assignments: {}
                             }
                         ]);
+                        if (error2) throw error2;
                     } catch (e) {
                         console.error('API Error', e);
                         setSyncStatus('error');
@@ -585,13 +596,23 @@
                 }
             };
 
-            const setPasoImage = (imageData) => {
+            const setPasoImage = async (imageData) => {
                 setBackgroundImages(prev => {
                     const next = { ...prev };
                     if (imageData) next[currentPasoId] = imageData;
                     else delete next[currentPasoId];
                     return next;
                 });
+
+                if (isOnline) {
+                    try {
+                        const { error } = await supabaseClient.from('pasos').update({ bg_image: imageData || null }).eq('id', currentPasoId);
+                        if (error) throw error;
+                    } catch (e) {
+                        console.error('API Error syncing image', e);
+                        setSyncStatus('error');
+                    }
+                }
             };
 
             const currentMembers = useMemo(() => members.filter(m => m.pasoId === currentPasoId && (m.status === 'titular' || !m.status) && (m.cuadrilla_type === currentCuadrilla || !m.cuadrilla_type)), [members, currentPasoId, currentCuadrilla]);
