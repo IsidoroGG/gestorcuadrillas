@@ -375,53 +375,66 @@
                         );
                         if (error) throw error;
                     }
+                    
+                    const validPasoIds = new Set(pasos.map(p => p.id));
+
                     if (members.length > 0) {
-                        const { error } = await supabaseClient.from('members').upsert(
-                            members.map(m => ({
-                                id: m.id,
-                                paso_id: m.pasoId,
-                                dni: m.dni,
-                                name: m.name,
-                                nickname: m.nickname,
-                                address: m.address,
-                                height: m.height,
-                                phone: m.phone,
-                                position: m.position,
-                                status: m.status,
-                                start_year: m.startYear,
-                                trabajadera: m.trabajadera,
-                                cuadrilla_type: m.cuadrilla_type || 'alta'
-                            }))
-                        );
-                        if (error) throw error;
+                        const validMembers = members.filter(m => validPasoIds.has(m.pasoId));
+                        if (validMembers.length > 0) {
+                            const { error } = await supabaseClient.from('members').upsert(
+                                validMembers.map(m => ({
+                                    id: m.id,
+                                    paso_id: m.pasoId,
+                                    dni: m.dni,
+                                    name: m.name,
+                                    nickname: m.nickname,
+                                    address: m.address,
+                                    height: m.height,
+                                    phone: m.phone,
+                                    position: m.position,
+                                    status: m.status,
+                                    start_year: m.startYear,
+                                    trabajadera: m.trabajadera,
+                                    cuadrilla_type: m.cuadrilla_type || 'alta'
+                                }))
+                            );
+                            if (error) throw error;
+                        }
                     }
                     if (Object.keys(igualaData).length > 0) {
-                        const igualaUpsert = Object.entries(igualaData).map(([key, data]) => {
-                            const parts = key.split('_');
-                            const pId = parts[0];
-                            const cType = parts.length > 1 ? parts.slice(1).join('_') : 'alta';
-                            return {
-                                id: key,
-                                paso_id: pId,
-                                cuadrilla_type: cType,
-                                config: { rows: data.rows, count: data.count },
-                                assignments: data.assignments
-                            };
-                        });
-                        const { error } = await supabaseClient.from('iguala').upsert(igualaUpsert);
-                        if (error) throw error;
+                        const igualaUpsert = Object.entries(igualaData)
+                            .filter(([key]) => validPasoIds.has(key.split('_')[0]))
+                            .map(([key, data]) => {
+                                const parts = key.split('_');
+                                const pId = parts[0];
+                                const cType = parts.length > 1 ? parts.slice(1).join('_') : 'alta';
+                                return {
+                                    id: key,
+                                    paso_id: pId,
+                                    cuadrilla_type: cType,
+                                    config: { rows: data.rows, count: data.count },
+                                    assignments: data.assignments
+                                };
+                            });
+                        if (igualaUpsert.length > 0) {
+                            const { error } = await supabaseClient.from('iguala').upsert(igualaUpsert);
+                            if (error) throw error;
+                        }
                     }
                     if (events.length > 0) {
-                        const { error } = await supabaseClient.from('events').upsert(
-                            events.map(e => ({
-                                id: e.id,
-                                paso_id: e.pasoId,
-                                title: e.title,
-                                date: e.date,
-                                type: e.type
-                            }))
-                        );
-                        if (error) throw error;
+                        const validEvents = events.filter(e => validPasoIds.has(e.pasoId));
+                        if (validEvents.length > 0) {
+                            const { error } = await supabaseClient.from('events').upsert(
+                                validEvents.map(e => ({
+                                    id: e.id,
+                                    paso_id: e.pasoId,
+                                    title: e.title,
+                                    date: e.date,
+                                    type: e.type
+                                }))
+                            );
+                            if (error) throw error;
+                        }
                     }
                     setSyncStatus('success');
                     alert("¡Todos los datos locales se han subido a Supabase con éxito!");
