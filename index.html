@@ -347,15 +347,27 @@
                 }
             };
 
+            // Auto-fetch at startup when Supabase connection exists
+            useEffect(() => {
+                if (isOnline) {
+                    fetchFromBackend().catch(e => console.warn("Auto-sync initial fetch logic failed silently as expected.", e));
+                }
+            }, [isOnline]);
+
+
             const pushAllToBackend = async () => {
                 if (!supabaseClient) return alert("No hay conexión con Supabase configurada.");
                 setSyncStatus('syncing');
                 try {
                     // Borrar datos antiguos en cascada inverso para evitar conflictos
-                    await supabaseClient.from('events').delete().neq('id', 'dummy');
-                    await supabaseClient.from('iguala').delete().neq('id', 'dummy');
-                    await supabaseClient.from('members').delete().neq('id', 'dummy');
-                    await supabaseClient.from('pasos').delete().neq('id', 'dummy');
+                    const { error: err1 } = await supabaseClient.from('events').delete().neq('id', 'dummy');
+                    if (err1) throw err1;
+                    const { error: err2 } = await supabaseClient.from('iguala').delete().neq('id', 'dummy');
+                    if (err2) throw err2;
+                    const { error: err3 } = await supabaseClient.from('members').delete().neq('id', 'dummy');
+                    if (err3) throw err3;
+                    const { error: err4 } = await supabaseClient.from('pasos').delete().neq('id', 'dummy');
+                    if (err4) throw err4;
 
                     if (pasos.length > 0) {
                         const { error } = await supabaseClient.from('pasos').upsert(
@@ -416,7 +428,8 @@
                 } catch (error) {
                     console.error("Push error", error);
                     setSyncStatus('error');
-                    alert("Error al subir los datos a Supabase. Comprueba la consola.");
+                    let errMsg = error.message || error.details || JSON.stringify(error);
+                    alert("Error en Supabase: " + errMsg + "\n\n(Asegúrate de que tus tablas de Supabase coincidan con las indicadas en las instrucciones, si acabas de añadir la parte de imágenes tenías que ejecutar el ALTER TABLE)");
                 }
             };
 
