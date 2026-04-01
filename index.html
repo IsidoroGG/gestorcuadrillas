@@ -22,9 +22,10 @@
     <!-- Custom Backend API (via fetch) -->
     <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
 
-    <!-- jsPDF & AutoTable -->
+    <!-- jsPDF, AutoTable & html2canvas for PDF Generation -->
     <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js"></script>
     <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf-autotable/3.5.31/jspdf.plugin.autotable.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/html2canvas/1.4.1/html2canvas.min.js"></script>
 
     <script>
         tailwind.config = {
@@ -1388,6 +1389,49 @@
                 return "CORR.";
             };
 
+            const exportToPDF = async () => {
+                const element = document.getElementById('iguala-grid');
+                if (!element) return;
+                
+                // Ocultar botones de borrar temporalmente
+                const deleteButtons = element.querySelectorAll('button');
+                deleteButtons.forEach(btn => btn.style.display = 'none');
+                
+                // Añadir un poco de padding al DOM para que la imagen no quede cortada por bordes redondeados
+                const originalPadding = element.style.padding;
+                element.style.padding = '20px';
+                
+                try {
+                    const canvas = await html2canvas(element, { scale: 2, useCORS: true, backgroundColor: '#ffffff' });
+                    const imgData = canvas.toDataURL('image/jpeg', 0.95);
+                    
+                    // Formato A4 vertical
+                    const pdf = new jspdf.jsPDF({ orientation: 'portrait', unit: 'mm', format: 'a4' });
+                    
+                    const pdfWidth = pdf.internal.pageSize.getWidth();
+                    // Calcular altura manteniendo proporción (y restando márgenes)
+                    const imgProps = pdf.getImageProperties(imgData);
+                    const pdfHeight = (imgProps.height * (pdfWidth - 10)) / imgProps.width;
+                    
+                    pdf.setFontSize(16);
+                    pdf.setFont('helvetica', 'bold');
+                    pdf.text(`Igualá - ${store.currentPaso?.name || ''} (${store.currentCuadrilla.toUpperCase()})`, 10, 15);
+                    pdf.setFontSize(10);
+                    pdf.setFont('helvetica', 'normal');
+                    pdf.text(`Generado el: ${new Date().toLocaleDateString()}`, 10, 22);
+
+                    // Insert image
+                    pdf.addImage(imgData, 'JPEG', 5, 28, pdfWidth - 10, pdfHeight);
+                    pdf.save(`Plano_Iguala_${store.currentPaso?.name?.replace(/\s+/g, '_')}_${store.currentCuadrilla}.pdf`);
+                } catch (error) {
+                    console.error("Error exportando PDF:", error);
+                    alert("Error al intentar generar el PDF. Revisa la consola.");
+                } finally {
+                    element.style.padding = originalPadding;
+                    deleteButtons.forEach(btn => btn.style.display = '');
+                }
+            };
+
             return (
                 <div className="flex flex-col md:flex-row gap-6 h-[calc(100dvh-140px)] md:h-[calc(100dvh-140px)] relative">
                     {/* Visualizer */}
@@ -1395,6 +1439,9 @@
                         <header className="flex flex-wrap justify-between items-center mb-6 gap-4">
                             <h2 className="text-2xl font-bold text-cofrade-dark">Plano: {store.currentPaso?.name || '...'}</h2>
                             <div className="flex gap-4">
+                                <Button variant="outline" size="sm" onClick={exportToPDF} className="flex items-center gap-2" title="Descargar como PDF">
+                                    <Icon name="printer" size={16} /> <span className="hidden md:inline">Exportar PDF</span>
+                                </Button>
                                 <div className="flex items-center gap-2">
                                     <label className="text-sm text-gray-600 font-bold">Trabajaderas:</label>
                                     <input type="number" min="1" max="15" className="w-16 px-2 py-1 border rounded text-center"
@@ -1412,7 +1459,7 @@
                         </header>
 
                         <div className="overflow-x-auto">
-                            <div className="space-y-4 max-w-4xl min-w-[600px] mx-auto pb-10">
+                            <div id="iguala-grid" className="space-y-4 max-w-4xl min-w-[600px] mx-auto pb-10 bg-white rounded-lg">
                                 <div className="w-full h-4 bg-cofrade-gold/30 rounded-full mb-8 flex items-center justify-center text-[10px] text-yellow-800 font-bold uppercase tracking-widest">Frontal del Paso</div>
 
                                 {rows.map((row) => (
