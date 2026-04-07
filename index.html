@@ -22,10 +22,9 @@
     <!-- Custom Backend API (via fetch) -->
     <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
 
-    <!-- jsPDF, AutoTable & html2canvas for PDF Generation -->
+    <!-- jsPDF & AutoTable -->
     <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js"></script>
     <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf-autotable/3.5.31/jspdf.plugin.autotable.min.js"></script>
-    <script src="https://cdnjs.cloudflare.com/ajax/libs/html2canvas/1.4.1/html2canvas.min.js"></script>
 
     <script>
         tailwind.config = {
@@ -1389,47 +1388,64 @@
                 return "CORR.";
             };
 
-            const exportToPDF = async () => {
-                const element = document.getElementById('iguala-grid');
-                if (!element) return;
+            const exportToPDF = () => {
+                const isLandscape = spotsPerRow > 6;
+                const pdf = new jspdf.jsPDF({ orientation: isLandscape ? 'landscape' : 'portrait', unit: 'mm' });
                 
-                // Ocultar botones de borrar temporalmente
-                const deleteButtons = element.querySelectorAll('button');
-                deleteButtons.forEach(btn => btn.style.display = 'none');
-                
-                // Añadir un poco de padding al DOM para que la imagen no quede cortada por bordes redondeados
-                const originalPadding = element.style.padding;
-                element.style.padding = '20px';
-                
-                try {
-                    const canvas = await html2canvas(element, { scale: 2, useCORS: true, backgroundColor: '#ffffff' });
-                    const imgData = canvas.toDataURL('image/jpeg', 0.95);
-                    
-                    // Formato A4 vertical
-                    const pdf = new jspdf.jsPDF({ orientation: 'portrait', unit: 'mm', format: 'a4' });
-                    
-                    const pdfWidth = pdf.internal.pageSize.getWidth();
-                    // Calcular altura manteniendo proporción (y restando márgenes)
-                    const imgProps = pdf.getImageProperties(imgData);
-                    const pdfHeight = (imgProps.height * (pdfWidth - 10)) / imgProps.width;
-                    
-                    pdf.setFontSize(16);
-                    pdf.setFont('helvetica', 'bold');
-                    pdf.text(`Igualá - ${store.currentPaso?.name || ''} (${store.currentCuadrilla.toUpperCase()})`, 10, 15);
-                    pdf.setFontSize(10);
-                    pdf.setFont('helvetica', 'normal');
-                    pdf.text(`Generado el: ${new Date().toLocaleDateString()}`, 10, 22);
+                pdf.setFontSize(16);
+                pdf.setFont('helvetica', 'bold');
+                pdf.text(`Igualá - ${store.currentPaso?.name || ''} (${store.currentCuadrilla.toUpperCase()})`, 14, 15);
+                pdf.setFontSize(10);
+                pdf.setFont('helvetica', 'normal');
+                pdf.text(`Generado el: ${new Date().toLocaleDateString()}`, 14, 22);
 
-                    // Insert image
-                    pdf.addImage(imgData, 'JPEG', 5, 28, pdfWidth - 10, pdfHeight);
-                    pdf.save(`Plano_Iguala_${store.currentPaso?.name?.replace(/\s+/g, '_')}_${store.currentCuadrilla}.pdf`);
-                } catch (error) {
-                    console.error("Error exportando PDF:", error);
-                    alert("Error al intentar generar el PDF. Revisa la consola.");
-                } finally {
-                    element.style.padding = originalPadding;
-                    deleteButtons.forEach(btn => btn.style.display = '');
+                const tableData = [];
+                const tableHead = ["Trab."];
+                
+                // Add column headers based on positions
+                for (let s = 1; s <= spotsPerRow; s++) {
+                    tableHead.push(`Posición ${s}`);
                 }
+
+                rows.forEach(row => {
+                    const rowData = [`T${row}`];
+                    spots.forEach(spot => {
+                        const member = getSpotMember(row, spot);
+                        if (member) {
+                            const displayName = (member.nickname && member.nickname.trim()) ? member.nickname : member.name;
+                            rowData.push(`${displayName}\n${member.height} cm`);
+                        } else {
+                            const label = getSpotLabel(row, spot);
+                            rowData.push(`(${label})`);
+                        }
+                    });
+                    tableData.push(rowData);
+                });
+
+                pdf.autoTable({
+                    startY: 30,
+                    head: [tableHead],
+                    body: tableData,
+                    theme: 'grid',
+                    styles: { 
+                        fontSize: isLandscape ? 8 : 9, 
+                        cellPadding: 4, 
+                        valign: 'middle', 
+                        halign: 'center',
+                        lineColor: [200, 200, 200],
+                        lineWidth: 0.1
+                    },
+                    headStyles: { 
+                        fillColor: [64, 46, 122], // cofrade-purple roughly
+                        textColor: 255,
+                        fontStyle: 'bold'
+                    },
+                    columnStyles: {
+                        0: { fontStyle: 'bold', fillColor: [248, 250, 252], cellWidth: 15 } // Column for "T1", "T2"...
+                    }
+                });
+
+                pdf.save(`Cuadricula_Iguala_${store.currentPaso?.name?.replace(/\s+/g, '_')}_${store.currentCuadrilla}.pdf`);
             };
 
             return (
@@ -1459,7 +1475,7 @@
                         </header>
 
                         <div className="overflow-x-auto">
-                            <div id="iguala-grid" className="space-y-4 max-w-4xl min-w-[600px] mx-auto pb-10 bg-white rounded-lg">
+                            <div className="space-y-4 max-w-4xl min-w-[600px] mx-auto pb-10">
                                 <div className="w-full h-4 bg-cofrade-gold/30 rounded-full mb-8 flex items-center justify-center text-[10px] text-yellow-800 font-bold uppercase tracking-widest">Frontal del Paso</div>
 
                                 {rows.map((row) => (
