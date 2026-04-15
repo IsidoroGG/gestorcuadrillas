@@ -1503,8 +1503,24 @@
                 
                 if (mode === 'both') {
                     generateIgualaTable(pdf, 'alta', store.currentPasoId, 15);
-                    pdf.addPage();
-                    generateIgualaTable(pdf, 'baja', store.currentPasoId, 15);
+                    
+                    // Cálculo inteligente de espacio para evitar partir la cuadrilla baja por la mitad
+                    const pageHeight = pdf.internal.pageSize.getHeight();
+                    const bajaConfig = store.igualaData[`${store.currentPasoId}_baja`] || { rows: 8 };
+                    const localRowCount = bajaConfig.rows || 1;
+                    // Altura estimada: 15mm titulo + 12mm cabecera + 12mm por cada fila
+                    const estimatedHeight = 15 + 12 + (localRowCount * 12); 
+                    
+                    let nextStartY = pdf.lastAutoTable?.finalY ? pdf.lastAutoTable.finalY + 20 : 150;
+                    
+                    // Si el inicio + la altura estidada sobrepasa el final de la página (menos un margen de 15), forzamos salto
+                    if (nextStartY + estimatedHeight > pageHeight - 15) {
+                        pdf.addPage();
+                        nextStartY = 15;
+                    }
+
+                    generateIgualaTable(pdf, 'baja', store.currentPasoId, nextStartY);
+                    
                     pdf.save(`Cuadriculas_Iguala_${store.currentPaso?.name?.replace(/\s+/g, '_')}_COMPLETA.pdf`);
                 } else {
                     generateIgualaTable(pdf, store.currentCuadrilla, store.currentPasoId, 15);
