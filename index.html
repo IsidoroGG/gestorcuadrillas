@@ -638,6 +638,44 @@
                 await updateMember(member.id, { ...member, status: 'titular' });
             };
 
+            const demoteToAspirante = async (member) => {
+                if (!confirm(`¿Mover a ${member.name} a la lista de Aspirantes? (Se vaciará su puesto de trabajo en la Igualá si lo tiene asignado)`)) return;
+                
+                // Limpiar asignaciones en alta y baja
+                const newIguala = { ...igualaData };
+                let equalsUpdated = false;
+
+                ['alta', 'baja'].forEach(ctype => {
+                    const key = `${member.pasoId}_${ctype}`;
+                    if (newIguala[key]) {
+                        const localAssign = { ...newIguala[key].assignments };
+                        let modified = false;
+                        Object.keys(localAssign).forEach(k => {
+                            if (localAssign[k] === member.id) {
+                                delete localAssign[k];
+                                modified = true;
+                                equalsUpdated = true;
+                            }
+                        });
+                        newIguala[key] = { ...newIguala[key], assignments: localAssign };
+                        
+                        if (modified && isOnline) {
+                            supabaseClient.from('iguala').upsert({
+                                id: key,
+                                paso_id: member.pasoId,
+                                cuadrilla_type: ctype,
+                                config: newIguala[key].config,
+                                assignments: localAssign
+                            }, { onConflict: 'paso_id, cuadrilla_type' }).then(({error}) => { if(error) console.error(error) });
+                        }
+                    }
+                });
+
+                if (equalsUpdated) setIgualaData(newIguala);
+                
+                await updateMember(member.id, { ...member, status: 'aspirante' });
+            };
+
             // Unified Iguala Update (Config or Assignment)
             const updateIgualaData = async (newDataObj) => {
                 setIgualaData(prev => ({
@@ -720,7 +758,7 @@
 
             return {
                 pasos, currentPasoId, setCurrentPasoId, createPaso, deletePaso, updatePaso, currentPaso: pasos.find(p => p.id === currentPasoId) || pasos[0] || { id: 'dummy', name: 'Cargando...', type: '-' },
-                members, currentMembers, currentAspirantes, addMember, updateMember, deleteMember, promoteAspirante, copyMember,
+                members, currentMembers, currentAspirantes, addMember, updateMember, deleteMember, promoteAspirante, demoteToAspirante, copyMember,
                 igualaData, currentIguala: igualaData[`${currentPasoId}_${currentCuadrilla}`] || { rows: 8, count: 6, assignments: {} },
                 setIgualaConfig, assignSpot, unassignSpot, currentCuadrilla, setCurrentCuadrilla,
                 events, createEvent,
@@ -1216,9 +1254,10 @@
                                             </td>
                                             <td className="p-4 text-right">
                                                 <div className="flex justify-end gap-2">
+                                                    <button onClick={() => store.demoteToAspirante(member)} className="p-2 border rounded-lg text-orange-500 hover:bg-orange-50" title="Mover a Aspirantes"><Icon name="arrow-down-circle" size={16} /></button>
                                                     <button onClick={() => setCopyMemberId(member.id)} className="p-2 border rounded-lg text-slate-400 hover:text-cofrade-purple hover:bg-purple-50" title="Copiar a otro paso"><Icon name="copy" size={16} /></button>
-                                                    <button onClick={() => openEdit(member)} className="p-2 border rounded-lg text-blue-500 hover:bg-blue-50"><Icon name="pencil" size={16} /></button>
-                                                    <button onClick={() => { if (confirm('¿Borrar?')) store.deleteMember(member.id) }} className="p-2 border rounded-lg text-red-500 hover:bg-red-50"><Icon name="trash-2" size={16} /></button>
+                                                    <button onClick={() => openEdit(member)} className="p-2 border rounded-lg text-blue-500 hover:bg-blue-50" title="Editar"><Icon name="pencil" size={16} /></button>
+                                                    <button onClick={() => { if (confirm('¿Borrar?')) store.deleteMember(member.id) }} className="p-2 border rounded-lg text-red-500 hover:bg-red-50" title="Eliminar"><Icon name="trash-2" size={16} /></button>
                                                 </div>
                                             </td>
                                         </tr>
@@ -1258,7 +1297,10 @@
                                                 </div>
 
                                                 <div className="flex gap-2 mt-3">
-                                                    <Button onClick={() => setCopyMemberId(member.id)} variant="ghost" className="bg-slate-50 border border-slate-200 text-xs py-1 h-8 px-2 text-slate-500">
+                                                    <Button onClick={() => store.demoteToAspirante(member)} variant="ghost" className="bg-orange-50 border border-orange-200 text-xs py-1 h-8 px-2 text-orange-600" title="Mover a Aspirantes">
+                                                        <Icon name="arrow-down-circle" size={14} />
+                                                    </Button>
+                                                    <Button onClick={() => setCopyMemberId(member.id)} variant="ghost" className="bg-slate-50 border border-slate-200 text-xs py-1 h-8 px-2 text-slate-500" title="Copiar a otro Paso">
                                                         <Icon name="copy" size={14} />
                                                     </Button>
                                                     <Button onClick={() => openEdit(member)} variant="ghost" className="flex-1 bg-slate-50 border border-slate-200 text-xs py-1 h-8">
@@ -1357,6 +1399,7 @@
         const IgualaView = ({ store }) => {
             const [selectedMemberId, setSelectedMemberId] = useState('');
             const [isSidebarOpen, setIsSidebarOpen] = useState(false); // Mobile state
+            const [exportMode, setExportMode] = useState('current');
 
             const rowCount = store.currentIguala.rows || 1;
             const spotsPerRow = store.currentIguala.count || 6;
@@ -1388,64 +1431,85 @@
                 return "CORR.";
             };
 
-            const exportToPDF = () => {
-                const isLandscape = spotsPerRow > 6;
-                const pdf = new jspdf.jsPDF({ orientation: isLandscape ? 'landscape' : 'portrait', unit: 'mm' });
-                
+            const generateIgualaTable = (pdf, cuadrillaType, pasoId, startY) => {
+                const igualaKey = `${pasoId}_${cuadrillaType}`;
+                const igualaConfig = store.igualaData[igualaKey] || { rows: 8, count: 6, assignments: {} };
+                const localRowCount = igualaConfig.rows || 1;
+                const localSpotsPerRow = igualaConfig.count || 6;
+                const localRows = Array.from({ length: localRowCount }, (_, i) => i + 1);
+                const localSpots = Array.from({ length: localSpotsPerRow }, (_, i) => i + 1);
+
+                const getLocalSpotMember = (r, s) => {
+                    const mId = igualaConfig.assignments[`${r}-${s}`];
+                    return store.members.find(m => m.id === mId);
+                };
+
+                const getLocalSpotLabel = (r, s) => {
+                    const isFirstLastRow = r === 1 || r === localRowCount;
+                    const isOuter = s === 1 || s === localSpotsPerRow;
+                    const isNextOuter = s === 2 || s === localSpotsPerRow - 1;
+                    if (isOuter) return isFirstLastRow ? "PATERO" : "COSTERO";
+                    if (isNextOuter) return "FIJADOR";
+                    return "CORR.";
+                };
+
                 pdf.setFontSize(16);
                 pdf.setFont('helvetica', 'bold');
-                pdf.text(`Igualá - ${store.currentPaso?.name || ''} (${store.currentCuadrilla.toUpperCase()})`, 14, 15);
+                pdf.text(`Igualá - ${store.currentPaso?.name || ''} (${cuadrillaType.toUpperCase()})`, 14, startY);
                 pdf.setFontSize(10);
                 pdf.setFont('helvetica', 'normal');
-                pdf.text(`Generado el: ${new Date().toLocaleDateString()}`, 14, 22);
+                pdf.text(`Generado el: ${new Date().toLocaleDateString()}`, 14, startY + 7);
 
                 const tableData = [];
                 const tableHead = ["Trab."];
-                
-                // Add column headers based on positions
-                for (let s = 1; s <= spotsPerRow; s++) {
-                    tableHead.push(`Posición ${s}`);
-                }
+                for (let s = 1; s <= localSpotsPerRow; s++) tableHead.push(`Pos. ${s}`);
 
-                rows.forEach(row => {
+                localRows.forEach(row => {
                     const rowData = [`T${row}`];
-                    spots.forEach(spot => {
-                        const member = getSpotMember(row, spot);
+                    localSpots.forEach(spot => {
+                        const member = getLocalSpotMember(row, spot);
                         if (member) {
                             const displayName = (member.nickname && member.nickname.trim()) ? member.nickname : member.name;
                             rowData.push(`${displayName}\n${member.height} cm`);
                         } else {
-                            const label = getSpotLabel(row, spot);
-                            rowData.push(`(${label})`);
+                            rowData.push(`(${getLocalSpotLabel(row, spot)})`);
                         }
                     });
                     tableData.push(rowData);
                 });
 
                 pdf.autoTable({
-                    startY: 30,
+                    startY: startY + 15,
                     head: [tableHead],
                     body: tableData,
                     theme: 'grid',
-                    styles: { 
-                        fontSize: isLandscape ? 8 : 9, 
-                        cellPadding: 4, 
-                        valign: 'middle', 
-                        halign: 'center',
-                        lineColor: [200, 200, 200],
-                        lineWidth: 0.1
-                    },
-                    headStyles: { 
-                        fillColor: [64, 46, 122], // cofrade-purple roughly
-                        textColor: 255,
-                        fontStyle: 'bold'
-                    },
-                    columnStyles: {
-                        0: { fontStyle: 'bold', fillColor: [248, 250, 252], cellWidth: 15 } // Column for "T1", "T2"...
-                    }
+                    styles: { fontSize: localSpotsPerRow > 6 ? 8 : 9, cellPadding: 4, valign: 'middle', halign: 'center', lineColor: [200, 200, 200], lineWidth: 0.1 },
+                    headStyles: { fillColor: [64, 46, 122], textColor: 255, fontStyle: 'bold' },
+                    columnStyles: { 0: { fontStyle: 'bold', fillColor: [248, 250, 252], cellWidth: 15 } }
                 });
+                
+                return localSpotsPerRow > 6; // Return if landscape is preferred
+            };
 
-                pdf.save(`Cuadricula_Iguala_${store.currentPaso?.name?.replace(/\s+/g, '_')}_${store.currentCuadrilla}.pdf`);
+            const exportToPDF = (mode) => {
+                // Peek at the max row spots to determine main orientation
+                let maxSpots = spotsPerRow;
+                if (mode === 'both') {
+                    const bajaConfig = store.igualaData[`${store.currentPasoId}_baja`] || { count: 6 };
+                    if (bajaConfig.count > maxSpots) maxSpots = bajaConfig.count;
+                }
+                const isLandscape = maxSpots > 6;
+                const pdf = new jspdf.jsPDF({ orientation: isLandscape ? 'landscape' : 'portrait', unit: 'mm' });
+                
+                if (mode === 'both') {
+                    generateIgualaTable(pdf, 'alta', store.currentPasoId, 15);
+                    pdf.addPage();
+                    generateIgualaTable(pdf, 'baja', store.currentPasoId, 15);
+                    pdf.save(`Cuadriculas_Iguala_${store.currentPaso?.name?.replace(/\s+/g, '_')}_COMPLETA.pdf`);
+                } else {
+                    generateIgualaTable(pdf, store.currentCuadrilla, store.currentPasoId, 15);
+                    pdf.save(`Cuadricula_Iguala_${store.currentPaso?.name?.replace(/\s+/g, '_')}_${store.currentCuadrilla}.pdf`);
+                }
             };
 
             return (
@@ -1455,9 +1519,19 @@
                         <header className="flex flex-wrap justify-between items-center mb-6 gap-4">
                             <h2 className="text-2xl font-bold text-cofrade-dark">Plano: {store.currentPaso?.name || '...'}</h2>
                             <div className="flex gap-4">
-                                <Button variant="outline" size="sm" onClick={exportToPDF} className="flex items-center gap-2" title="Descargar como PDF">
-                                    <Icon name="printer" size={16} /> <span className="hidden md:inline">Exportar PDF</span>
-                                </Button>
+                                <div className="flex items-center gap-1 border border-slate-200 rounded-lg pr-1">
+                                    <select 
+                                        className="bg-transparent text-sm py-1 px-2 outline-none cursor-pointer max-w-[140px]"
+                                        value={exportMode}
+                                        onChange={(e) => setExportMode(e.target.value)}
+                                    >
+                                        <option value="current">Actual ({store.currentCuadrilla.toUpperCase()})</option>
+                                        <option value="both">Ambas Cuadrillas (Alta y Baja)</option>
+                                    </select>
+                                    <Button variant="outline" size="sm" onClick={() => exportToPDF(exportMode)} className="flex items-center gap-1 border-0 border-l border-slate-200 rounded-none h-full" title="Descargar como PDF">
+                                        <Icon name="printer" size={16} /> <span className="hidden md:inline">PDF</span>
+                                    </Button>
+                                </div>
                                 <div className="flex items-center gap-2">
                                     <label className="text-sm text-gray-600 font-bold">Trabajaderas:</label>
                                     <input type="number" min="1" max="15" className="w-16 px-2 py-1 border rounded text-center"
